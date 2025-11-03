@@ -334,7 +334,6 @@
         }
       };
 
-
       /**
        * 🗺️ 繪製直轄市、縣(市)界線
        */
@@ -496,13 +495,13 @@
             }
           }
 
-          // 顏色方案：5級，根據圖片顏色（深藍→綠→黃→橙→紅）
+          // 顏色方案：5級，基於中國國旗紅色 #DE2910 的漸變（淺→深）
           const colors = [
-            '#2C508C', // 深藍
-            '#2E8B57', // 綠
-            '#FFC107', // 黃
-            '#FF8C00', // 橙
-            '#DC3545', // 紅
+            '#f9d5d3', // 很淺（中國紅的淡化版）
+            '#f4a9a3', // 淺
+            '#ee6c5e', // 中
+            '#de2910', // 中國國旗紅
+            '#a51f0c', // 深（中國紅的深化版）
           ];
 
           // 顏色映射函數
@@ -1029,13 +1028,13 @@
             }
           }
 
-          // 顏色方案：5級，根據圖片顏色（深藍→綠→黃→橙→紅）
+          // 顏色方案：5級，基於中國國旗紅色 #DE2910 的漸變（淺→深）
           const colors = [
-            '#2C508C', // 深藍
-            '#2E8B57', // 綠
-            '#FFC107', // 黃
-            '#FF8C00', // 橙
-            '#DC3545', // 紅
+            '#f9d5d3', // 很淺（中國紅的淡化版）
+            '#f4a9a3', // 淺
+            '#ee6c5e', // 中
+            '#de2910', // 中國國旗紅
+            '#a51f0c', // 深（中國紅的深化版）
           ];
 
           // 顏色映射函數
@@ -1173,17 +1172,18 @@
         // 移除舊的圖例
         svg.selectAll('.legend').remove();
 
-        // 圖例尺寸
-        const legendWidth = 200;
-        const legendHeight = 20;
-        const padding = 10;
+        // 圖例尺寸（增加寬度和高度以改善間距）
+        const legendWidth = 280;
+        const legendHeight = 24;
+        const padding = 15;
+        const labelSpacing = 28; // 標籤之間的垂直間距
 
         // 計算右下角位置（使用容器實際尺寸）
         const rect = mapContainer.value.getBoundingClientRect();
         const svgWidth = rect.width;
         const svgHeight = rect.height;
         const legendX = svgWidth - legendWidth - padding;
-        const legendY = svgHeight - legendHeight - 80; // 留出更多標籤空間
+        const legendY = svgHeight - legendHeight - 120; // 留出更多標籤空間
 
         // 創建圖例組（固定在 viewport，不受 zoom 影響）
         const legend = svg
@@ -1229,8 +1229,8 @@
           .append('text')
           .attr('class', 'legend-label')
           .attr('x', (d, i) => (i * legendWidth) / (labels.length - 1))
-          .attr('y', legendHeight + 15)
-          .attr('font-size', '11px')
+          .attr('y', legendHeight + labelSpacing)
+          .attr('font-size', '12px')
           .attr('fill', '#333')
           .attr('text-anchor', 'middle')
           .text((d) => formatValue(d));
@@ -1244,8 +1244,8 @@
             .append('text')
             .attr('class', 'legend-count')
             .attr('x', (d, i) => (i + 0.5) * (legendWidth / classCounts.length))
-            .attr('y', legendHeight + 35)
-            .attr('font-size', '10px')
+            .attr('y', legendHeight + labelSpacing * 2)
+            .attr('font-size', '11px')
             .attr('fill', '#666')
             .attr('text-anchor', 'middle')
             .text((d) => d);
@@ -1256,8 +1256,8 @@
           .append('text')
           .attr('class', 'legend-title')
           .attr('x', legendWidth / 2)
-          .attr('y', -5)
-          .attr('font-size', '12px')
+          .attr('y', -12)
+          .attr('font-size', '13px')
           .attr('font-weight', 'bold')
           .attr('fill', '#333')
           .attr('text-anchor', 'middle')
