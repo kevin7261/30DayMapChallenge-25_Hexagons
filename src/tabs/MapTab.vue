@@ -1274,23 +1274,29 @@
             return;
           }
 
-          // 創建 MapLibre Map
+          // 創建 MapLibre Map（使用 Carto Dark 底圖）
           maplibreMap = new maplibregl.Map({
             container: mapContainer.value,
             style: {
               version: 8,
               sources: {
-                'raster-tiles': {
+                carto: {
                   type: 'raster',
-                  tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+                  tiles: [
+                    'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+                    'https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+                    'https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+                  ],
                   tileSize: 256,
+                  attribution:
+                    '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
                 },
               },
               layers: [
                 {
-                  id: 'simple-tiles',
+                  id: 'carto-dark-layer',
                   type: 'raster',
-                  source: 'raster-tiles',
+                  source: 'carto',
                   minzoom: 0,
                   maxzoom: 22,
                 },
