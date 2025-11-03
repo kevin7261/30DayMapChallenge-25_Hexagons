@@ -207,7 +207,7 @@
 
       /**
        * 六角形網格 GeoJSON 數據
-       * 來源：hex_grid_pointy_with_population.geojson
+       * 來源：hex_grid_pointy_final.geojson
        * @type {Ref<Object|null>}
        */
       const hexData = ref(null);
@@ -282,7 +282,7 @@
 
           // 載入六角形網格 GeoJSON 檔案
           const hexResponse = await fetch(
-            `${process.env.BASE_URL}data/geojson/hex_grid_pointy_with_population.geojson`
+            `${process.env.BASE_URL}data/geojson/hex_grid_pointy_final.geojson`
           );
 
           // 檢查響應
@@ -334,92 +334,6 @@
         }
       };
 
-      /**
-       * 📊 Jenks Natural Breaks 分類函數
-       * @param {Array} data - 數據陣列
-       * @param {number} nClasses - 分類數量
-       * @returns {Array} 分類閾值陣列
-       */
-      // eslint-disable-next-line no-unused-vars
-      const jenksNaturalBreaks = (data, nClasses) => {
-        if (!data || data.length === 0) return [];
-
-        const sortedData = [...data].sort((a, b) => a - b);
-        const dataLength = sortedData.length;
-
-        // 如果要分類數大於數據點數，返回數據點數
-        if (nClasses > dataLength) {
-          nClasses = dataLength;
-        }
-
-        // 初始化矩陣
-        const matrix = [];
-        for (let i = 0; i < dataLength + 1; i++) {
-          matrix[i] = [];
-          for (let j = 0; j < nClasses + 1; j++) {
-            matrix[i][j] = 0;
-          }
-        }
-
-        // 計算下三角矩陣（方差）
-        const lowerClassLimit = [];
-        for (let i = 0; i < dataLength + 1; i++) {
-          lowerClassLimit[i] = [];
-          for (let j = 0; j < nClasses + 1; j++) {
-            lowerClassLimit[i][j] = 0;
-          }
-        }
-
-        let variance = 0;
-
-        // 計算方差
-        for (let i = 1; i < nClasses + 1; i++) {
-          matrix[0][i] = 1;
-          lowerClassLimit[0][i] = 0;
-          for (let j = 1; j < dataLength + 1; j++) {
-            matrix[j][i] = Infinity;
-          }
-        }
-
-        for (let l = 0; l < dataLength; l++) {
-          let sum = 0;
-          let sumSquares = 0;
-          let w = 0;
-
-          for (let m = 0; m < l + 1; m++) {
-            const lowerClassLimitIndex = l - m + 1;
-            const val = sortedData[lowerClassLimitIndex - 1];
-            w++;
-            sum += val;
-            sumSquares += val * val;
-            variance = sumSquares - (sum * sum) / w;
-            const i4 = lowerClassLimitIndex - 1;
-
-            if (i4 !== 0) {
-              for (let j = 2; j < nClasses + 1; j++) {
-                if (matrix[l][j] >= variance + matrix[i4][j - 1]) {
-                  lowerClassLimit[l][j] = lowerClassLimitIndex;
-                  matrix[l][j] = variance + matrix[i4][j - 1];
-                }
-              }
-            }
-          }
-
-          lowerClassLimit[l][1] = 1;
-          matrix[l][1] = variance;
-        }
-
-        // 提取分類閾值
-        const classMarkers = [];
-        let k = dataLength;
-        for (let j = nClasses; j > 0; j--) {
-          const id = lowerClassLimit[k][j] - 2;
-          classMarkers[j - 1] = sortedData[id + 1];
-          k = lowerClassLimit[k][j] - 1;
-        }
-
-        return classMarkers;
-      };
 
       /**
        * 🗺️ 繪製直轄市、縣(市)界線
@@ -540,31 +454,47 @@
           g.selectAll('.hex-grid').remove();
           g.selectAll('.county').remove();
 
-          // 提取大陸地區人民核准定居數據
-          const values = hexData.value.features
-            .map((d) => d.properties['大陸地區人民核准定居'] || 0)
+          // 過濾掉人口數為0的區域
+          const validFeatures = hexData.value.features.filter(
+            (d) => d.properties['人口數'] && d.properties['人口數'] > 0
+          );
+
+          // 提取 ratio_China 數據（只考慮人口數 > 0 的區域）
+          const values = validFeatures
+            .map((d) => d.properties['ratio_China'] || 0)
             .filter((v) => v > 0); // 只取非零值
 
-          console.log('[MapTab] 大陸地區人民核准定居數據:', {
+          console.log('[MapTab] ratio_China 數據:', {
             total: hexData.value.features.length,
+            validPopulation: validFeatures.length,
             nonZero: values.length,
             min: d3.min(values),
             max: d3.max(values),
             mean: d3.mean(values),
           });
 
-          // 使用固定區間分為 5 類
-          const min = d3.min(values);
-          const max = d3.max(values);
-          const interval = (max - min) / 5;
+          // 使用 Quantile (分位數) 分類分為 5 類
+          // 這是比例數據的最佳分類方法，確保每個類別有大致相同數量的區域
+          const sortedValues = [...values].sort((a, b) => a - b);
           const breaks = [
-            min + interval * 1,
-            min + interval * 2,
-            min + interval * 3,
-            min + interval * 4,
-            max,
-          ];
-          console.log('[MapTab] Fixed Interval 分類閾值:', breaks);
+            d3.quantile(sortedValues, 0.2), // 20th percentile
+            d3.quantile(sortedValues, 0.4), // 40th percentile
+            d3.quantile(sortedValues, 0.6), // 60th percentile
+            d3.quantile(sortedValues, 0.8), // 80th percentile
+            d3.quantile(sortedValues, 1.0), // 100th percentile (max)
+          ].filter((v) => v !== undefined && v !== null); // 過濾無效值
+
+          console.log('[MapTab] Quantile (分位數) 分類閾值:', breaks);
+          console.log('[MapTab] 各類別對應分位數: 0-20%, 20-40%, 40-60%, 60-80%, 80-100%');
+
+          // 確保 breaks 有足夠的閾值（至少5個）
+          if (breaks.length < 5) {
+            console.warn('[MapTab] Quantile 返回的閾值不足，補充最大值');
+            const max = d3.max(values);
+            while (breaks.length < 5) {
+              breaks.push(max);
+            }
+          }
 
           // 顏色方案：5級，根據圖片顏色（深藍→綠→黃→橙→紅）
           const colors = [
@@ -578,6 +508,8 @@
           // 顏色映射函數
           const getColor = (value) => {
             if (!value || value === 0) return '#f0f0f0'; // 無數據的顏色
+            if (!breaks || breaks.length === 0) return colors[0]; // 如果沒有 breaks，返回第一個顏色
+
             for (let i = 0; i < breaks.length; i++) {
               if (value <= breaks[i]) {
                 return colors[i];
@@ -586,10 +518,10 @@
             return colors[colors.length - 1]; // 最大值
           };
 
-          // 計算各級數量
+          // 計算各級數量（只考慮人口數 > 0 的區域）
           const classCounts = new Array(colors.length).fill(0);
-          hexData.value.features.forEach((d) => {
-            const value = d.properties['大陸地區人民核准定居'] || 0;
+          validFeatures.forEach((d) => {
+            const value = d.properties['ratio_China'] || 0;
             if (value > 0) {
               for (let i = 0; i < breaks.length; i++) {
                 if (value <= breaks[i]) {
@@ -603,10 +535,10 @@
             }
           });
 
-          // 按大陸地區人民核准定居數量排序
-          const sortedHexes = hexData.value.features.sort((a, b) => {
-            const valueA = a.properties['大陸地區人民核准定居'] || 0;
-            const valueB = b.properties['大陸地區人民核准定居'] || 0;
+          // 按 ratio_China 排序（只考慮人口數 > 0 的區域）
+          const sortedHexes = validFeatures.sort((a, b) => {
+            const valueA = a.properties['ratio_China'] || 0;
+            const valueB = b.properties['ratio_China'] || 0;
             return valueA - valueB;
           });
 
@@ -620,7 +552,7 @@
             .append('path')
             .attr('d', path)
             .attr('class', 'hex-grid')
-            .attr('fill', (d) => getColor(d.properties['大陸地區人民核准定居']))
+            .attr('fill', (d) => getColor(d.properties['ratio_China']))
             .attr('fill-opacity', 0.8)
             .attr('stroke', '#ffffff')
             .attr('stroke-width', 0.5)
@@ -633,11 +565,27 @@
               d3.select(this).attr('fill-opacity', 1).attr('stroke-width', 2);
               if (tooltip) {
                 const properties = d.properties;
+                // 格式化小數值為易讀格式
+                const formatValue = (key, value) => {
+                  if (value === null || value === undefined) return 'N/A';
+                  // 對於 ratio 開頭的欄位，格式化為小數
+                  if (key.startsWith('ratio_') && typeof value === 'number') {
+                    if (value === 0) return '0';
+                    if (value < 0.0001) {
+                      return value.toExponential(2);
+                    }
+                    if (value < 0.01) {
+                      return value.toFixed(5);
+                    }
+                    return value.toFixed(4);
+                  }
+                  return value;
+                };
                 // 顯示所有 properties 欄位
                 let tooltipHTML = '';
                 Object.keys(properties).forEach((key) => {
                   const value = properties[key];
-                  tooltipHTML += `<div><strong>${key}:</strong> ${value !== null && value !== undefined ? value : 'N/A'}</div>`;
+                  tooltipHTML += `<div><strong>${key}:</strong> ${formatValue(key, value)}</div>`;
                 });
                 tooltip.innerHTML = tooltipHTML;
                 const [mouseX, mouseY] = d3.pointer(event, mapContainer.value);
@@ -820,11 +768,27 @@
               d3.select(this).attr('fill-opacity', 1);
               if (tooltip) {
                 const properties = d.properties;
+                // 格式化小數值為易讀格式
+                const formatValue = (key, value) => {
+                  if (value === null || value === undefined) return 'N/A';
+                  // 對於 ratio 開頭的欄位，格式化為小數
+                  if (key.startsWith('ratio_') && typeof value === 'number') {
+                    if (value === 0) return '0';
+                    if (value < 0.0001) {
+                      return value.toExponential(2);
+                    }
+                    if (value < 0.01) {
+                      return value.toFixed(5);
+                    }
+                    return value.toFixed(4);
+                  }
+                  return value;
+                };
                 // 顯示所有 properties 欄位
                 let tooltipHTML = '';
                 Object.keys(properties).forEach((key) => {
                   const value = properties[key];
-                  tooltipHTML += `<div><strong>${key}:</strong> ${value !== null && value !== undefined ? value : 'N/A'}</div>`;
+                  tooltipHTML += `<div><strong>${key}:</strong> ${formatValue(key, value)}</div>`;
                 });
                 tooltip.innerHTML = tooltipHTML;
                 const [mouseX, mouseY] = d3.pointer(event, mapContainer.value);
@@ -1002,7 +966,7 @@
       };
 
       /**
-       * 🗺️ 繪製六角形網格（使用大陸地區人民核准定居數據）
+       * 🗺️ 繪製六角形網格（使用 ratio_China 數據）
        */
       const drawHexGrid = () => {
         if (!g || !hexData.value || !path) {
@@ -1023,31 +987,47 @@
           // 先清除舊的圖層
           g.selectAll('.hex-grid').remove();
 
-          // 提取大陸地區人民核准定居數據
-          const values = hexData.value.features
-            .map((d) => d.properties['大陸地區人民核准定居'] || 0)
+          // 過濾掉人口數為0的區域
+          const validFeatures = hexData.value.features.filter(
+            (d) => d.properties['人口數'] && d.properties['人口數'] > 0
+          );
+
+          // 提取 ratio_China 數據（只考慮人口數 > 0 的區域）
+          const values = validFeatures
+            .map((d) => d.properties['ratio_China'] || 0)
             .filter((v) => v > 0); // 只取非零值
 
-          console.log('[MapTab] 大陸地區人民核准定居數據:', {
+          console.log('[MapTab] ratio_China 數據:', {
             total: hexData.value.features.length,
+            validPopulation: validFeatures.length,
             nonZero: values.length,
             min: d3.min(values),
             max: d3.max(values),
             mean: d3.mean(values),
           });
 
-          // 使用固定區間分為 5 類
-          const min = d3.min(values);
-          const max = d3.max(values);
-          const interval = (max - min) / 5;
+          // 使用 Quantile (分位數) 分類分為 5 類
+          // 這是比例數據的最佳分類方法，確保每個類別有大致相同數量的區域
+          const sortedValues = [...values].sort((a, b) => a - b);
           const breaks = [
-            min + interval * 1,
-            min + interval * 2,
-            min + interval * 3,
-            min + interval * 4,
-            max,
-          ];
-          console.log('[MapTab] Fixed Interval 分類閾值:', breaks);
+            d3.quantile(sortedValues, 0.2), // 20th percentile
+            d3.quantile(sortedValues, 0.4), // 40th percentile
+            d3.quantile(sortedValues, 0.6), // 60th percentile
+            d3.quantile(sortedValues, 0.8), // 80th percentile
+            d3.quantile(sortedValues, 1.0), // 100th percentile (max)
+          ].filter((v) => v !== undefined && v !== null); // 過濾無效值
+
+          console.log('[MapTab] Quantile (分位數) 分類閾值:', breaks);
+          console.log('[MapTab] 各類別對應分位數: 0-20%, 20-40%, 40-60%, 60-80%, 80-100%');
+
+          // 確保 breaks 有足夠的閾值（至少5個）
+          if (breaks.length < 5) {
+            console.warn('[MapTab] Quantile 返回的閾值不足，補充最大值');
+            const max = d3.max(values);
+            while (breaks.length < 5) {
+              breaks.push(max);
+            }
+          }
 
           // 顏色方案：5級，根據圖片顏色（深藍→綠→黃→橙→紅）
           const colors = [
@@ -1061,6 +1041,8 @@
           // 顏色映射函數
           const getColor = (value) => {
             if (!value || value === 0) return '#f0f0f0'; // 無數據的顏色
+            if (!breaks || breaks.length === 0) return colors[0]; // 如果沒有 breaks，返回第一個顏色
+
             for (let i = 0; i < breaks.length; i++) {
               if (value <= breaks[i]) {
                 return colors[i];
@@ -1069,10 +1051,10 @@
             return colors[colors.length - 1]; // 最大值
           };
 
-          // 計算各級數量
+          // 計算各級數量（只考慮人口數 > 0 的區域）
           const classCounts = new Array(colors.length).fill(0);
-          hexData.value.features.forEach((d) => {
-            const value = d.properties['大陸地區人民核准定居'] || 0;
+          validFeatures.forEach((d) => {
+            const value = d.properties['ratio_China'] || 0;
             if (value > 0) {
               for (let i = 0; i < breaks.length; i++) {
                 if (value <= breaks[i]) {
@@ -1086,10 +1068,10 @@
             }
           });
 
-          // 按大陸地區人民核准定居數量排序
-          const sortedHexes = hexData.value.features.sort((a, b) => {
-            const valueA = a.properties['大陸地區人民核准定居'] || 0;
-            const valueB = b.properties['大陸地區人民核准定居'] || 0;
+          // 按 ratio_China 排序（只考慮人口數 > 0 的區域）
+          const sortedHexes = validFeatures.sort((a, b) => {
+            const valueA = a.properties['ratio_China'] || 0;
+            const valueB = b.properties['ratio_China'] || 0;
             return valueA - valueB;
           });
 
@@ -1097,8 +1079,8 @@
           console.log(
             '[DEBUG] 前 5 個網格顏色:',
             sortedHexes.slice(0, 5).map((d) => ({
-              value: d.properties['大陸地區人民核准定居'],
-              color: getColor(d.properties['大陸地區人民核准定居']),
+              value: d.properties['ratio_China'],
+              color: getColor(d.properties['ratio_China']),
             }))
           );
 
@@ -1114,7 +1096,7 @@
             .append('path')
             .attr('d', path)
             .attr('class', 'hex-grid')
-            .attr('fill', (d) => getColor(d.properties['大陸地區人民核准定居']))
+            .attr('fill', (d) => getColor(d.properties['ratio_China']))
             .attr('fill-opacity', 0.8)
             .attr('stroke', '#ffffff')
             .attr('stroke-width', 0.5)
@@ -1127,11 +1109,27 @@
               d3.select(this).attr('fill-opacity', 1).attr('stroke-width', 2);
               if (tooltip) {
                 const properties = d.properties;
+                // 格式化小數值為易讀格式
+                const formatValue = (key, value) => {
+                  if (value === null || value === undefined) return 'N/A';
+                  // 對於 ratio 開頭的欄位，格式化為小數
+                  if (key.startsWith('ratio_') && typeof value === 'number') {
+                    if (value === 0) return '0';
+                    if (value < 0.0001) {
+                      return value.toExponential(2);
+                    }
+                    if (value < 0.01) {
+                      return value.toFixed(5);
+                    }
+                    return value.toFixed(4);
+                  }
+                  return value;
+                };
                 // 顯示所有 properties 欄位
                 let tooltipHTML = '';
                 Object.keys(properties).forEach((key) => {
                   const value = properties[key];
-                  tooltipHTML += `<div><strong>${key}:</strong> ${value !== null && value !== undefined ? value : 'N/A'}</div>`;
+                  tooltipHTML += `<div><strong>${key}:</strong> ${formatValue(key, value)}</div>`;
                 });
                 tooltip.innerHTML = tooltipHTML;
                 const [mouseX, mouseY] = d3.pointer(event, mapContainer.value);
@@ -1210,6 +1208,18 @@
           .attr('stroke', '#333')
           .attr('stroke-width', 1);
 
+        // 格式化小數值為易讀格式
+        const formatValue = (value) => {
+          if (value === 0) return '0';
+          if (value < 0.0001) {
+            return value.toExponential(2); // 科學記數法
+          }
+          if (value < 0.01) {
+            return value.toFixed(5); // 保留5位小數
+          }
+          return value.toFixed(4); // 保留4位小數
+        };
+
         // 添加數值標籤
         const labels = [0, ...breaks];
         legend
@@ -1223,7 +1233,7 @@
           .attr('font-size', '11px')
           .attr('fill', '#333')
           .attr('text-anchor', 'middle')
-          .text((d) => Math.round(d));
+          .text((d) => formatValue(d));
 
         // 添加各級數量標籤
         if (classCounts) {
@@ -1251,7 +1261,7 @@
           .attr('font-weight', 'bold')
           .attr('fill', '#333')
           .attr('text-anchor', 'middle')
-          .text('大陸地區人民核准定居');
+          .text('ratio_China (比例值)');
       };
 
       /**
