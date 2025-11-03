@@ -90,6 +90,12 @@
   // Pinia 狀態管理
   import { useDataStore } from '@/stores/dataStore';
 
+  // CesiumJS 3D 地圖庫 - 將使用 CDN 版本，從 window.Cesium 獲取
+
+  // MapLibre GL JS 3D 地圖庫
+  import maplibregl from 'maplibre-gl';
+  import 'maplibre-gl/dist/maplibre-gl.css';
+
   // ═══════════════════════════════════════════════════════════════════════════
   // 🎯 組件定義 (Component Definition)
   // ═══════════════════════════════════════════════════════════════════════════
@@ -167,6 +173,18 @@
        * @type {HTMLElement|null}
        */
       let tooltip = null;
+
+      /**
+       * CesiumJS Viewer 實例
+       * @type {any|null}
+       */
+      let cesiumViewer = null;
+
+      /**
+       * MapLibre GL Map 實例
+       * @type {maplibregl.Map|null}
+       */
+      let maplibreMap = null;
 
       // ═══════════════════════════════════════════════════════════════════════
       // 🎛️ 控制狀態 (Control States)
@@ -903,7 +921,7 @@
           // 繪製縣市界線和六角形網格
           drawCounties();
           drawHexGrid();
-        } else {
+        } else if (displayMode.value === 'grid') {
           // Grid 模式：載入六角形網格數據，需要地圖投影來繪製
           if (!hexData.value) {
             await loadHexData();
@@ -992,6 +1010,462 @@
 
           // 繪製六角形網格（Grid 模式，不顯示縣市界線）
           drawHexGridOnly();
+        } else if (displayMode.value === 'cesium3d') {
+          // CesiumJS 3D 模式
+          if (!hexData.value) {
+            await loadHexData();
+          }
+          // 清理舊的 SVG 或其他視圖
+          cleanupOtherViews();
+          // 初始化 CesiumJS 3D 地圖
+          await initCesium3D();
+        } else if (displayMode.value === 'maplibre3d') {
+          // MapLibre 3D 模式
+          if (!hexData.value) {
+            await loadHexData();
+          }
+          // 清理舊的 SVG 或其他視圖
+          cleanupOtherViews();
+          // 初始化 MapLibre 3D 地圖
+          await initMapLibre3D();
+        }
+      };
+
+      /**
+       * 🧹 清理其他視圖（SVG、Cesium、MapLibre）
+       */
+      const cleanupOtherViews = () => {
+        // 清理 SVG
+        if (svg) {
+          try {
+            if (zoom) {
+              svg.on('.zoom', null);
+            }
+            svg.remove();
+          } catch (e) {
+            console.warn('[MapTab] 清理 SVG 時出錯:', e);
+          }
+          svg = null;
+          g = null;
+          zoom = null;
+          projection = null;
+          path = null;
+        }
+
+        // 清理 Cesium Viewer
+        if (cesiumViewer) {
+          try {
+            cesiumViewer.destroy();
+          } catch (e) {
+            console.warn('[MapTab] 清理 Cesium Viewer 時出錯:', e);
+          }
+          cesiumViewer = null;
+        }
+
+        // 清理 MapLibre Map
+        if (maplibreMap) {
+          try {
+            maplibreMap.remove();
+          } catch (e) {
+            console.warn('[MapTab] 清理 MapLibre Map 時出錯:', e);
+          }
+          maplibreMap = null;
+        }
+
+        // 清空容器
+        if (mapContainer.value) {
+          mapContainer.value.innerHTML = '';
+        }
+      };
+
+      /**
+       * 🌍 初始化 CesiumJS 3D 地圖
+       */
+      const initCesium3D = async () => {
+        try {
+          console.log('[MapTab] 開始初始化 CesiumJS 3D 地圖');
+
+          if (!mapContainer.value || !hexData.value) {
+            console.error('[MapTab] 無法初始化 CesiumJS: 容器或數據不存在');
+            return;
+          }
+
+          // 檢查 Cesium 是否已載入（從 CDN）
+          if (typeof window.Cesium === 'undefined') {
+            console.error('[MapTab] CesiumJS 尚未載入，請確保已引入 CDN 腳本');
+            return;
+          }
+
+          // eslint-disable-next-line no-undef
+          const Cesium = window.Cesium;
+
+          // 設置 Cesium Ion 訪問令牌
+          Cesium.Ion.defaultAccessToken =
+            'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiIxYjJiZjlhZC1mZDNkLTRiZWEtYjExNy1iZDI1OWQ5ZmJlZmEiLCJpZCI6MzU1MDgxLCJpYXQiOjE3NjE3MTc5NTl9.ivNUz20WJNOvyTB6vzB8xHNWNSzgl06vBAGOuZLNKs4';
+
+          // 創建世界地形提供者（需要 Ion token）
+          const worldTerrain = await Cesium.createWorldTerrainAsync();
+
+          // 創建 Cesium Viewer（使用世界地形）
+          cesiumViewer = new Cesium.Viewer(mapContainer.value, {
+            terrainProvider: worldTerrain,
+            baseLayerPicker: false,
+            geocoder: false,
+            homeButton: false,
+            infoBox: false,
+            sceneModePicker: false,
+            selectionIndicator: false,
+            timeline: false,
+            animation: false,
+            fullscreenButton: false,
+            vrButton: false,
+            navigationHelpButton: false,
+          });
+
+          // 設置視角到台灣
+          cesiumViewer.camera.setView({
+            destination: Cesium.Cartesian3.fromDegrees(121.0, 23.5, 500000),
+            orientation: {
+              heading: 0.0,
+              pitch: -0.5,
+              roll: 0.0,
+            },
+          });
+
+          // 顏色方案：根據 level (1-5) 返回顏色
+          const getColorByLevel = (level) => {
+            const colors = {
+              1: Cesium.Color.fromCssColorString('#f9d5d3'), // level 1 - 很淺
+              2: Cesium.Color.fromCssColorString('#f4a9a3'), // level 2 - 淺
+              3: Cesium.Color.fromCssColorString('#ee6c5e'), // level 3 - 中
+              4: Cesium.Color.fromCssColorString('#de2910'), // level 4 - 中國國旗紅
+              5: Cesium.Color.fromCssColorString('#a51f0c'), // level 5 - 深
+            };
+            return colors[level] || Cesium.Color.fromCssColorString('#f0f0f0');
+          };
+
+          // 計算六角形網格的寬度（米）
+          // 從第一個有效的六角形計算寬度（相對頂點之間的距離）
+          const calculateHexWidth = () => {
+            if (!hexData.value || !hexData.value.features || hexData.value.features.length === 0) {
+              return 6000; // 默認值，如果無法計算
+            }
+
+            const firstHex = hexData.value.features.find(
+              (f) =>
+                f.properties.level >= 1 &&
+                f.properties.level <= 5 &&
+                f.geometry &&
+                f.geometry.coordinates[0]
+            );
+
+            if (!firstHex || !firstHex.geometry.coordinates[0]) {
+              return 6000; // 默認值
+            }
+
+            const coords = firstHex.geometry.coordinates[0];
+            if (coords.length < 4) {
+              return 6000; // 默認值
+            }
+
+            // 計算相對頂點之間的距離（六角形寬度）
+            const p1 = coords[0];
+            const p4 = coords[3]; // 相對頂點
+
+            // 使用 Haversine 公式計算距離（米）
+            const R = 6371000; // 地球半徑（米）
+            const lat1 = (p1[1] * Math.PI) / 180;
+            const lat4 = (p4[1] * Math.PI) / 180;
+            const dLat = ((p4[1] - p1[1]) * Math.PI) / 180;
+            const dLon = ((p4[0] - p1[0]) * Math.PI) / 180;
+            const a =
+              Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+              Math.cos(lat1) * Math.cos(lat4) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            const width = R * c;
+
+            console.log('[MapTab] CesiumJS 3D - 計算的六角形寬度（米）:', width);
+            return width;
+          };
+
+          const hexWidth = calculateHexWidth();
+
+          // 將 level 轉換為高度（米）
+          // level 1 的高度 = 六角形寬度
+          // level 5 的高度 = level 1 的 5 倍 = 六角形寬度的 5 倍
+          const levelToHeight = (level) => {
+            if (!level || level < 1 || level > 5) return 0;
+            // level 1 = hexWidth, level 2 = 2 * hexWidth, ..., level 5 = 5 * hexWidth
+            return level * hexWidth;
+          };
+
+          // 過濾有效的 features（level 1-5）
+          const validFeatures = hexData.value.features.filter(
+            (d) =>
+              d.properties.level &&
+              d.properties.level >= 1 &&
+              d.properties.level <= 5 &&
+              d.geometry &&
+              d.geometry.type === 'Polygon'
+          );
+
+          console.log('[MapTab] CesiumJS 3D - 有效的 features 數量:', validFeatures.length);
+
+          // 為每個 feature 創建 3D 柱狀圖（高度由 level 決定）
+          validFeatures.forEach((feature) => {
+            const level = feature.properties.level;
+            const coordinates = feature.geometry.coordinates[0]; // Polygon 的第一個環
+            const extrudedHeight = levelToHeight(level);
+
+            // 將 GeoJSON 座標轉換為 Cesium 的 Cartesian3 數組
+            // 基礎座標應該在地面（高度 0），然後通過 extrudedHeight 向上擠壓
+            const positions = coordinates.map((coord) =>
+              Cesium.Cartesian3.fromDegrees(coord[0], coord[1], 0)
+            );
+
+            // 創建擠壓多邊形實體（柱狀圖效果）
+            cesiumViewer.entities.add({
+              polygon: {
+                hierarchy: positions,
+                material: getColorByLevel(level).withAlpha(0.8),
+                // 擠壓高度：從地面（height=0）到目標高度（extrudedHeight）
+                height: 0, // 基礎高度（地面）
+                extrudedHeight: extrudedHeight, // 擠壓到的高度
+                // 不顯示邊框
+                outline: false,
+              },
+              properties: feature.properties,
+            });
+          });
+
+          // 添加點擊事件顯示屬性信息
+          const handler = new Cesium.ScreenSpaceEventHandler(cesiumViewer.scene.canvas);
+          handler.setInputAction((click) => {
+            const pickedObject = cesiumViewer.scene.pick(click.position);
+            if (Cesium.defined(pickedObject) && pickedObject.id && pickedObject.id.properties) {
+              const properties = pickedObject.id.properties;
+              let info = 'Properties:\n';
+              // 顯示所有屬性
+              for (const key in properties) {
+                if (Object.prototype.hasOwnProperty.call(properties, key)) {
+                  info += `${key}: ${properties[key].getValue()}\n`;
+                }
+              }
+              console.log('[MapTab] CesiumJS - 點擊的實體信息:', info);
+            }
+          }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+          isMapReady.value = true;
+          console.log('[MapTab] CesiumJS 3D 地圖初始化完成');
+        } catch (error) {
+          console.error('[MapTab] CesiumJS 3D 地圖初始化失敗:', error);
+        }
+      };
+
+      /**
+       * 🗺️ 初始化 MapLibre GL 3D 地圖
+       */
+      const initMapLibre3D = async () => {
+        try {
+          console.log('[MapTab] 開始初始化 MapLibre GL 3D 地圖');
+
+          if (!mapContainer.value || !hexData.value) {
+            console.error('[MapTab] 無法初始化 MapLibre GL: 容器或數據不存在');
+            return;
+          }
+
+          // 創建 MapLibre Map
+          maplibreMap = new maplibregl.Map({
+            container: mapContainer.value,
+            style: {
+              version: 8,
+              sources: {
+                'raster-tiles': {
+                  type: 'raster',
+                  tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+                  tileSize: 256,
+                },
+              },
+              layers: [
+                {
+                  id: 'simple-tiles',
+                  type: 'raster',
+                  source: 'raster-tiles',
+                  minzoom: 0,
+                  maxzoom: 22,
+                },
+              ],
+            },
+            center: [121.0, 23.5], // 台灣中心
+            zoom: 8,
+            pitch: 45, // 傾斜角度，創建 3D 效果
+            bearing: 0,
+            antialias: true,
+          });
+
+          // 等待地圖載入完成
+          maplibreMap.on('load', () => {
+            console.log('[MapTab] MapLibre GL 地圖載入完成');
+
+            // 計算六角形網格的寬度（米）
+            // 從第一個有效的六角形計算寬度（相對頂點之間的距離）
+            const calculateHexWidth = () => {
+              if (
+                !hexData.value ||
+                !hexData.value.features ||
+                hexData.value.features.length === 0
+              ) {
+                return 6000; // 默認值，如果無法計算
+              }
+
+              const firstHex = hexData.value.features.find(
+                (f) =>
+                  f.properties.level >= 1 &&
+                  f.properties.level <= 5 &&
+                  f.geometry &&
+                  f.geometry.coordinates[0]
+              );
+
+              if (!firstHex || !firstHex.geometry.coordinates[0]) {
+                return 6000; // 默認值
+              }
+
+              const coords = firstHex.geometry.coordinates[0];
+              if (coords.length < 4) {
+                return 6000; // 默認值
+              }
+
+              // 計算相對頂點之間的距離（六角形寬度）
+              const p1 = coords[0];
+              const p4 = coords[3]; // 相對頂點
+
+              // 使用 Haversine 公式計算距離（米）
+              const R = 6371000; // 地球半徑（米）
+              const lat1 = (p1[1] * Math.PI) / 180;
+              const lat4 = (p4[1] * Math.PI) / 180;
+              const dLat = ((p4[1] - p1[1]) * Math.PI) / 180;
+              const dLon = ((p4[0] - p1[0]) * Math.PI) / 180;
+              const a =
+                Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(lat1) * Math.cos(lat4) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+              const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+              const width = R * c;
+
+              console.log('[MapTab] MapLibre GL 3D - 計算的六角形寬度（米）:', width);
+              return width;
+            };
+
+            const hexWidth = calculateHexWidth();
+
+            // 將 level 轉換為高度（米）
+            // level 1 的高度 = 六角形寬度
+            // level 5 的高度 = level 1 的 5 倍 = 六角形寬度的 5 倍
+            const levelToHeight = (level) => {
+              if (!level || level < 1 || level > 5) return 0;
+              // level 1 = hexWidth, level 2 = 2 * hexWidth, ..., level 5 = 5 * hexWidth
+              return level * hexWidth;
+            };
+
+            // 顏色方案：根據 level (1-5) 返回顏色
+            const getColorByLevel = (level) => {
+              const colors = {
+                1: '#f9d5d3', // level 1 - 很淺
+                2: '#f4a9a3', // level 2 - 淺
+                3: '#ee6c5e', // level 3 - 中
+                4: '#de2910', // level 4 - 中國國旗紅
+                5: '#a51f0c', // level 5 - 深
+              };
+              return colors[level] || '#f0f0f0';
+            };
+
+            // 準備 GeoJSON 數據，為每個 feature 添加高度屬性
+            const featuresWithHeight = hexData.value.features
+              .filter(
+                (d) =>
+                  d.properties.level &&
+                  d.properties.level >= 1 &&
+                  d.properties.level <= 5 &&
+                  d.geometry &&
+                  d.geometry.type === 'Polygon'
+              )
+              .map((feature) => {
+                const level = feature.properties.level;
+                const height = levelToHeight(level);
+
+                // 保持原始座標格式 [lng, lat]，高度通過屬性設置
+                return {
+                  ...feature,
+                  properties: {
+                    ...feature.properties,
+                    base_height: height,
+                    color: getColorByLevel(level),
+                  },
+                };
+              });
+
+            console.log(
+              '[MapTab] MapLibre GL 3D - 有效的 features 數量:',
+              featuresWithHeight.length
+            );
+
+            // 添加 GeoJSON 源
+            maplibreMap.addSource('hexagons-3d', {
+              type: 'geojson',
+              data: {
+                type: 'FeatureCollection',
+                features: featuresWithHeight,
+              },
+            });
+
+            // 添加填充圖層
+            maplibreMap.addLayer({
+              id: 'hexagons-3d-fill',
+              type: 'fill-extrusion',
+              source: 'hexagons-3d',
+              paint: {
+                'fill-extrusion-color': ['get', 'color'],
+                'fill-extrusion-height': ['get', 'base_height'],
+                'fill-extrusion-base': 0,
+                'fill-extrusion-opacity': 0.8,
+              },
+            });
+
+            // 不添加邊框圖層（移除白色邊框）
+
+            // 添加點擊事件
+            maplibreMap.on('click', 'hexagons-3d-fill', (e) => {
+              const properties = e.features[0].properties;
+              console.log('[MapTab] MapLibre GL - 點擊的實體信息:', properties);
+
+              // 創建彈出框
+              new maplibregl.Popup()
+                .setLngLat(e.lngLat)
+                .setHTML(
+                  Object.keys(properties)
+                    .map((key) => `<strong>${key}:</strong> ${properties[key]}`)
+                    .join('<br>')
+                )
+                .addTo(maplibreMap);
+            });
+
+            // 改變鼠標樣式
+            maplibreMap.on('mouseenter', 'hexagons-3d-fill', () => {
+              maplibreMap.getCanvas().style.cursor = 'pointer';
+            });
+
+            maplibreMap.on('mouseleave', 'hexagons-3d-fill', () => {
+              maplibreMap.getCanvas().style.cursor = '';
+            });
+
+            isMapReady.value = true;
+            console.log('[MapTab] MapLibre GL 3D 地圖初始化完成');
+          });
+
+          maplibreMap.on('error', (error) => {
+            console.error('[MapTab] MapLibre GL 地圖載入錯誤:', error);
+          });
+        } catch (error) {
+          console.error('[MapTab] MapLibre GL 3D 地圖初始化失敗:', error);
         }
       };
 
@@ -1363,7 +1837,7 @@
           };
 
           tryCreateMap();
-        } else {
+        } else if (displayMode.value === 'grid') {
           // Grid 模式：需要載入六角形網格數據，需要地圖投影來繪製
           console.log('[MapTab] 開始載入網格模式數據...');
           const hexLoaded = await loadHexData();
@@ -1394,6 +1868,32 @@
           };
 
           tryCreateGrid();
+        } else if (displayMode.value === 'cesium3d') {
+          // CesiumJS 3D 模式
+          console.log('[MapTab] 開始載入 CesiumJS 3D 模式數據...');
+          const hexLoaded = await loadHexData();
+
+          if (!hexLoaded) {
+            console.error('[MapTab] 無法載入六角形網格數據');
+            return;
+          }
+
+          console.log('[MapTab] 數據載入完成，開始初始化 CesiumJS 3D 地圖');
+          cleanupOtherViews();
+          await initCesium3D();
+        } else if (displayMode.value === 'maplibre3d') {
+          // MapLibre 3D 模式
+          console.log('[MapTab] 開始載入 MapLibre 3D 模式數據...');
+          const hexLoaded = await loadHexData();
+
+          if (!hexLoaded) {
+            console.error('[MapTab] 無法載入六角形網格數據');
+            return;
+          }
+
+          console.log('[MapTab] 數據載入完成，開始初始化 MapLibre 3D 地圖');
+          cleanupOtherViews();
+          await initMapLibre3D();
         }
       };
 
@@ -1452,6 +1952,26 @@
           tooltip = null;
         }
 
+        // 清理 Cesium Viewer
+        if (cesiumViewer) {
+          try {
+            cesiumViewer.destroy();
+          } catch (e) {
+            console.warn('[MapTab] 清理 Cesium Viewer 時出錯:', e);
+          }
+          cesiumViewer = null;
+        }
+
+        // 清理 MapLibre Map
+        if (maplibreMap) {
+          try {
+            maplibreMap.remove();
+          } catch (e) {
+            console.warn('[MapTab] 清理 MapLibre Map 時出錯:', e);
+          }
+          maplibreMap = null;
+        }
+
         projection = null;
         path = null;
         zoom = null;
@@ -1501,6 +2021,22 @@
             >
               網格模式
             </button>
+            <button
+              type="button"
+              class="btn border-0 my-country-btn my-font-sm-white px-4 py-3"
+              :class="[displayMode === 'cesium3d' ? 'active' : '']"
+              @click="toggleDisplayMode('cesium3d')"
+            >
+              CesiumJS 3D模式
+            </button>
+            <button
+              type="button"
+              class="btn border-0 my-country-btn my-font-sm-white px-4 py-3"
+              :class="[displayMode === 'maplibre3d' ? 'active' : '']"
+              @click="toggleDisplayMode('maplibre3d')"
+            >
+              MapLibre 3D模式
+            </button>
           </div>
         </div>
       </div>
@@ -1513,6 +2049,26 @@
 
   #map-container {
     overflow: hidden;
+  }
+
+  /* CesiumJS 容器樣式 */
+  :deep(.cesium-viewer) {
+    width: 100%;
+    height: 100%;
+  }
+
+  /* MapLibre GL 容器樣式 */
+  :deep(.maplibregl-map) {
+    width: 100%;
+    height: 100%;
+  }
+
+  :deep(.maplibregl-popup-content) {
+    background-color: rgba(0, 43, 127, 0.95);
+    color: #ffc61e;
+    border: 2px solid #ffc61e;
+    padding: 10px;
+    border-radius: 4px;
   }
 
   :deep(.leaflet-container) {

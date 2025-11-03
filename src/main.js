@@ -46,6 +46,7 @@ import router from './router';
 // 🎨 引入第三方樣式文件 (Import Third-Party Style Files)
 import 'bootstrap/dist/css/bootstrap.min.css'; // Bootstrap 5 CSS 框架
 import '@fortawesome/fontawesome-free/css/all.min.css'; // Font Awesome 圖示庫
+// CesiumJS CSS 已通過 CDN 在 index.html 中引入
 
 // 🎨 引入自定義樣式文件 (Import Custom Style Files)
 import './assets/css/common.css'; // 共用樣式（已包含變數和主題配置）
