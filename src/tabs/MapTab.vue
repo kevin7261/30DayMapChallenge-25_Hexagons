@@ -207,7 +207,7 @@
 
       /**
        * 六角形網格 GeoJSON 數據
-       * 來源：hex_grid_pointy_final.geojson
+       * 來源：pointy_final_with_levels.geojson
        * @type {Ref<Object|null>}
        */
       const hexData = ref(null);
@@ -282,7 +282,7 @@
 
           // 載入六角形網格 GeoJSON 檔案
           const hexResponse = await fetch(
-            `${process.env.BASE_URL}data/geojson/hex_grid_pointy_final.geojson`
+            `${process.env.BASE_URL}data/geojson/pointy_final_with_levels.geojson`
           );
 
           // 檢查響應
@@ -386,7 +386,19 @@
         try {
           // 清除舊的 SVG
           if (svg) {
+            // 完全移除 zoom 行為
+            try {
+              if (zoom) {
+                svg.on('.zoom', null);
+                svg.call(zoom.on('zoom', null));
+              }
+            } catch (e) {
+              console.warn('[MapTab] 移除 zoom 行為時出錯:', e);
+            }
             svg.remove();
+            svg = null;
+            g = null;
+            zoom = null;
           }
 
           const width = rect.width;
@@ -408,7 +420,9 @@
             .zoom()
             .scaleExtent([0.5, 50]) // 允許縮放 0.5x 到 50x
             .on('zoom', (event) => {
-              g.attr('transform', event.transform);
+              if (g && g.node() && g.node().parentNode) {
+                g.attr('transform', event.transform);
+              }
             });
 
           svg.call(zoom);
@@ -453,95 +467,63 @@
           g.selectAll('.hex-grid').remove();
           g.selectAll('.county').remove();
 
-          // 過濾掉人口數為0的區域
+          // 過濾掉人口數為0或ratio_China為0或沒有level的區域
           const validFeatures = hexData.value.features.filter(
-            (d) => d.properties['人口數'] && d.properties['人口數'] > 0
+            (d) =>
+              d.properties['人口數'] &&
+              d.properties['人口數'] > 0 &&
+              d.properties['ratio_China'] &&
+              d.properties['ratio_China'] > 0 &&
+              d.properties['level'] &&
+              d.properties['level'] >= 1 &&
+              d.properties['level'] <= 5
           );
 
-          // 提取 ratio_China 數據（只考慮人口數 > 0 的區域）
-          const values = validFeatures
-            .map((d) => d.properties['ratio_China'] || 0)
-            .filter((v) => v > 0); // 只取非零值
-
-          console.log('[MapTab] ratio_China 數據:', {
+          console.log('[MapTab] 使用 level 分類數據:', {
             total: hexData.value.features.length,
-            validPopulation: validFeatures.length,
-            nonZero: values.length,
-            min: d3.min(values),
-            max: d3.max(values),
-            mean: d3.mean(values),
+            valid: validFeatures.length, // 人口數 > 0 且 ratio_China > 0 且有 level
           });
-
-          // 使用 Quantile (分位數) 分類分為 5 類
-          // 這是比例數據的最佳分類方法，確保每個類別有大致相同數量的區域
-          const sortedValues = [...values].sort((a, b) => a - b);
-          const breaks = [
-            d3.quantile(sortedValues, 0.2), // 20th percentile
-            d3.quantile(sortedValues, 0.4), // 40th percentile
-            d3.quantile(sortedValues, 0.6), // 60th percentile
-            d3.quantile(sortedValues, 0.8), // 80th percentile
-            d3.quantile(sortedValues, 1.0), // 100th percentile (max)
-          ].filter((v) => v !== undefined && v !== null); // 過濾無效值
-
-          console.log('[MapTab] Quantile (分位數) 分類閾值:', breaks);
-          console.log('[MapTab] 各類別對應分位數: 0-20%, 20-40%, 40-60%, 60-80%, 80-100%');
-
-          // 確保 breaks 有足夠的閾值（至少5個）
-          if (breaks.length < 5) {
-            console.warn('[MapTab] Quantile 返回的閾值不足，補充最大值');
-            const max = d3.max(values);
-            while (breaks.length < 5) {
-              breaks.push(max);
-            }
-          }
 
           // 顏色方案：5級，基於中國國旗紅色 #DE2910 的漸變（淺→深）
           const colors = [
-            '#f9d5d3', // 很淺（中國紅的淡化版）
-            '#f4a9a3', // 淺
-            '#ee6c5e', // 中
-            '#de2910', // 中國國旗紅
-            '#a51f0c', // 深（中國紅的深化版）
+            '#f9d5d3', // level 1 - 很淺（中國紅的淡化版）
+            '#f4a9a3', // level 2 - 淺
+            '#ee6c5e', // level 3 - 中
+            '#de2910', // level 4 - 中國國旗紅
+            '#a51f0c', // level 5 - 深（中國紅的深化版）
           ];
 
-          // 顏色映射函數
-          const getColor = (value) => {
-            if (!value || value === 0) return '#f0f0f0'; // 無數據的顏色
-            if (!breaks || breaks.length === 0) return colors[0]; // 如果沒有 breaks，返回第一個顏色
-
-            for (let i = 0; i < breaks.length; i++) {
-              if (value <= breaks[i]) {
-                return colors[i];
-              }
-            }
-            return colors[colors.length - 1]; // 最大值
+          // 顏色映射函數：直接根據 level (1-5) 返回顏色
+          const getColor = (level) => {
+            if (!level || level < 1 || level > 5) return '#f0f0f0'; // 無數據的顏色
+            return colors[level - 1]; // level 1-5 對應 colors[0-4]
           };
 
-          // 計算各級數量（只考慮人口數 > 0 的區域）
+          // 計算各級數量（根據 level 統計）
           const classCounts = new Array(colors.length).fill(0);
           validFeatures.forEach((d) => {
-            const value = d.properties['ratio_China'] || 0;
-            if (value > 0) {
-              for (let i = 0; i < breaks.length; i++) {
-                if (value <= breaks[i]) {
-                  classCounts[i]++;
-                  break;
-                }
-              }
-              if (value > breaks[breaks.length - 1]) {
-                classCounts[colors.length - 1]++;
-              }
+            const level = d.properties['level'];
+            if (level >= 1 && level <= 5) {
+              classCounts[level - 1]++; // level 1-5 對應 classCounts[0-4]
             }
           });
 
-          // 按 ratio_China 排序（只考慮人口數 > 0 的區域）
+          // 按 level 排序（只考慮人口數 > 0 且 ratio_China > 0 且有 level 的區域）
           const sortedHexes = validFeatures.sort((a, b) => {
-            const valueA = a.properties['ratio_China'] || 0;
-            const valueB = b.properties['ratio_China'] || 0;
-            return valueA - valueB;
+            const levelA = a.properties['level'] || 0;
+            const levelB = b.properties['level'] || 0;
+            return levelA - levelB;
           });
 
           console.log('[DEBUG] Grid 模式 - 總共要繪製的六角形網格數:', sortedHexes.length);
+          console.log(
+            '[DEBUG] Grid 模式 - 前 5 個網格:',
+            sortedHexes.slice(0, 5).map((d) => ({
+              level: d.properties['level'],
+              ratio_China: d.properties['ratio_China'],
+              color: getColor(d.properties['level']),
+            }))
+          );
 
           // 繪製所有六角形網格
           const hexPaths = g
@@ -551,7 +533,7 @@
             .append('path')
             .attr('d', path)
             .attr('class', 'hex-grid')
-            .attr('fill', (d) => getColor(d.properties['ratio_China']))
+            .attr('fill', (d) => getColor(d.properties['level']))
             .attr('fill-opacity', 0.8)
             .attr('stroke', '#ffffff')
             .attr('stroke-width', 0.5)
@@ -608,7 +590,7 @@
             });
 
           // 繪製圖例
-          drawLegend(breaks, colors, classCounts);
+          drawLegend(colors, classCounts);
 
           console.log('[MapTab] 六角形網格（Grid 模式）繪製完成');
         } catch (error) {
@@ -837,8 +819,19 @@
 
           // 清除舊的 SVG（如果從其他模式切換過來）
           if (svg && !projection) {
+            // 完全移除 zoom 行為
+            try {
+              if (zoom) {
+                svg.on('.zoom', null);
+                svg.call(zoom.on('zoom', null));
+              }
+            } catch (e) {
+              console.warn('[MapTab] 移除 zoom 行為時出錯:', e);
+            }
             svg.remove();
             svg = null;
+            g = null;
+            zoom = null;
           }
 
           if (!projection || !path) {
@@ -850,7 +843,21 @@
 
               // 清除舊的 SVG
               if (svg) {
+                // 取消所有 zoom 事件綁定
+                if (zoom) {
+                  svg.on('.zoom', null);
+                  svg.on('mousedown.zoom', null);
+                  svg.on('mousemove.zoom', null);
+                  svg.on('mouseup.zoom', null);
+                  svg.on('touchstart.zoom', null);
+                  svg.on('touchmove.zoom', null);
+                  svg.on('touchend.zoom', null);
+                  svg.on('wheel.zoom', null);
+                }
                 svg.remove();
+                svg = null;
+                g = null;
+                zoom = null;
               }
 
               // 創建 SVG 和地圖投影
@@ -874,7 +881,9 @@
                 .zoom()
                 .scaleExtent([0.5, 50])
                 .on('zoom', (event) => {
-                  g.attr('transform', event.transform);
+                  if (g) {
+                    g.attr('transform', event.transform);
+                  }
                 });
 
               svg.call(zoom);
@@ -904,8 +913,14 @@
 
           // 清除舊的 SVG（如果從地圖模式切換過來）
           if (svg && !projection) {
+            // 取消 zoom 事件綁定
+            if (zoom) {
+              svg.on('.zoom', null);
+            }
             svg.remove();
             svg = null;
+            g = null;
+            zoom = null;
           }
 
           if (!projection || !path) {
@@ -917,7 +932,21 @@
 
               // 清除舊的 SVG
               if (svg) {
+                // 取消所有 zoom 事件綁定
+                if (zoom) {
+                  svg.on('.zoom', null);
+                  svg.on('mousedown.zoom', null);
+                  svg.on('mousemove.zoom', null);
+                  svg.on('mouseup.zoom', null);
+                  svg.on('touchstart.zoom', null);
+                  svg.on('touchmove.zoom', null);
+                  svg.on('touchend.zoom', null);
+                  svg.on('wheel.zoom', null);
+                }
                 svg.remove();
+                svg = null;
+                g = null;
+                zoom = null;
               }
 
               // 創建 SVG 和地圖投影（Grid 模式也需要投影來繪製六角形）
@@ -941,7 +970,9 @@
                 .zoom()
                 .scaleExtent([0.5, 50])
                 .on('zoom', (event) => {
-                  g.attr('transform', event.transform);
+                  if (g) {
+                    g.attr('transform', event.transform);
+                  }
                 });
 
               svg.call(zoom);
@@ -986,100 +1017,61 @@
           // 先清除舊的圖層
           g.selectAll('.hex-grid').remove();
 
-          // 過濾掉人口數為0的區域
+          // 過濾掉人口數為0或ratio_China為0或沒有level的區域
           const validFeatures = hexData.value.features.filter(
-            (d) => d.properties['人口數'] && d.properties['人口數'] > 0
+            (d) =>
+              d.properties['人口數'] &&
+              d.properties['人口數'] > 0 &&
+              d.properties['ratio_China'] &&
+              d.properties['ratio_China'] > 0 &&
+              d.properties['level'] &&
+              d.properties['level'] >= 1 &&
+              d.properties['level'] <= 5
           );
 
-          // 提取 ratio_China 數據（只考慮人口數 > 0 的區域）
-          const values = validFeatures
-            .map((d) => d.properties['ratio_China'] || 0)
-            .filter((v) => v > 0); // 只取非零值
-
-          console.log('[MapTab] ratio_China 數據:', {
+          console.log('[MapTab] 使用 level 分類數據:', {
             total: hexData.value.features.length,
-            validPopulation: validFeatures.length,
-            nonZero: values.length,
-            min: d3.min(values),
-            max: d3.max(values),
-            mean: d3.mean(values),
+            valid: validFeatures.length, // 人口數 > 0 且 ratio_China > 0 且有 level
           });
-
-          // 使用 Quantile (分位數) 分類分為 5 類
-          // 這是比例數據的最佳分類方法，確保每個類別有大致相同數量的區域
-          const sortedValues = [...values].sort((a, b) => a - b);
-          const breaks = [
-            d3.quantile(sortedValues, 0.2), // 20th percentile
-            d3.quantile(sortedValues, 0.4), // 40th percentile
-            d3.quantile(sortedValues, 0.6), // 60th percentile
-            d3.quantile(sortedValues, 0.8), // 80th percentile
-            d3.quantile(sortedValues, 1.0), // 100th percentile (max)
-          ].filter((v) => v !== undefined && v !== null); // 過濾無效值
-
-          console.log('[MapTab] Quantile (分位數) 分類閾值:', breaks);
-          console.log('[MapTab] 各類別對應分位數: 0-20%, 20-40%, 40-60%, 60-80%, 80-100%');
-
-          // 確保 breaks 有足夠的閾值（至少5個）
-          if (breaks.length < 5) {
-            console.warn('[MapTab] Quantile 返回的閾值不足，補充最大值');
-            const max = d3.max(values);
-            while (breaks.length < 5) {
-              breaks.push(max);
-            }
-          }
 
           // 顏色方案：5級，基於中國國旗紅色 #DE2910 的漸變（淺→深）
           const colors = [
-            '#f9d5d3', // 很淺（中國紅的淡化版）
-            '#f4a9a3', // 淺
-            '#ee6c5e', // 中
-            '#de2910', // 中國國旗紅
-            '#a51f0c', // 深（中國紅的深化版）
+            '#f9d5d3', // level 1 - 很淺（中國紅的淡化版）
+            '#f4a9a3', // level 2 - 淺
+            '#ee6c5e', // level 3 - 中
+            '#de2910', // level 4 - 中國國旗紅
+            '#a51f0c', // level 5 - 深（中國紅的深化版）
           ];
 
-          // 顏色映射函數
-          const getColor = (value) => {
-            if (!value || value === 0) return '#f0f0f0'; // 無數據的顏色
-            if (!breaks || breaks.length === 0) return colors[0]; // 如果沒有 breaks，返回第一個顏色
-
-            for (let i = 0; i < breaks.length; i++) {
-              if (value <= breaks[i]) {
-                return colors[i];
-              }
-            }
-            return colors[colors.length - 1]; // 最大值
+          // 顏色映射函數：直接根據 level (1-5) 返回顏色
+          const getColor = (level) => {
+            if (!level || level < 1 || level > 5) return '#f0f0f0'; // 無數據的顏色
+            return colors[level - 1]; // level 1-5 對應 colors[0-4]
           };
 
-          // 計算各級數量（只考慮人口數 > 0 的區域）
+          // 計算各級數量（根據 level 統計）
           const classCounts = new Array(colors.length).fill(0);
           validFeatures.forEach((d) => {
-            const value = d.properties['ratio_China'] || 0;
-            if (value > 0) {
-              for (let i = 0; i < breaks.length; i++) {
-                if (value <= breaks[i]) {
-                  classCounts[i]++;
-                  break;
-                }
-              }
-              if (value > breaks[breaks.length - 1]) {
-                classCounts[colors.length - 1]++;
-              }
+            const level = d.properties['level'];
+            if (level >= 1 && level <= 5) {
+              classCounts[level - 1]++; // level 1-5 對應 classCounts[0-4]
             }
           });
 
-          // 按 ratio_China 排序（只考慮人口數 > 0 的區域）
+          // 按 level 排序（只考慮人口數 > 0 且 ratio_China > 0 且有 level 的區域）
           const sortedHexes = validFeatures.sort((a, b) => {
-            const valueA = a.properties['ratio_China'] || 0;
-            const valueB = b.properties['ratio_China'] || 0;
-            return valueA - valueB;
+            const levelA = a.properties['level'] || 0;
+            const levelB = b.properties['level'] || 0;
+            return levelA - levelB;
           });
 
           console.log('[DEBUG] 總共要繪製的六角形網格數:', sortedHexes.length);
           console.log(
-            '[DEBUG] 前 5 個網格顏色:',
+            '[DEBUG] 前 5 個網格:',
             sortedHexes.slice(0, 5).map((d) => ({
-              value: d.properties['ratio_China'],
-              color: getColor(d.properties['ratio_China']),
+              level: d.properties['level'],
+              ratio_China: d.properties['ratio_China'],
+              color: getColor(d.properties['level']),
             }))
           );
 
@@ -1095,7 +1087,7 @@
             .append('path')
             .attr('d', path)
             .attr('class', 'hex-grid')
-            .attr('fill', (d) => getColor(d.properties['ratio_China']))
+            .attr('fill', (d) => getColor(d.properties['level']))
             .attr('fill-opacity', 0.8)
             .attr('stroke', '#ffffff')
             .attr('stroke-width', 0.5)
@@ -1152,10 +1144,10 @@
             });
 
           // 繪製圖例
-          drawLegend(breaks, colors, classCounts);
+          drawLegend(colors, classCounts);
 
           console.log('[MapTab] 六角形網格（地圖模式）繪製完成');
-          console.log('  - 分類閾值:', breaks);
+          console.log('  - 使用 level 分類 (1-5)');
           console.log('  - SVG 中的 path 元素數量:', g.selectAll('path').size());
           console.log('  - hex-grid class 元素數量:', g.selectAll('.hex-grid').size());
         } catch (error) {
@@ -1166,7 +1158,7 @@
       /**
        * 🎨 繪製圖例
        */
-      const drawLegend = (breaks, colors, classCounts) => {
+      const drawLegend = (colors, classCounts) => {
         if (!svg || !mapContainer.value) return;
 
         // 移除舊的圖例
@@ -1208,32 +1200,20 @@
           .attr('stroke', '#333')
           .attr('stroke-width', 1);
 
-        // 格式化小數值為易讀格式
-        const formatValue = (value) => {
-          if (value === 0) return '0';
-          if (value < 0.0001) {
-            return value.toExponential(2); // 科學記數法
-          }
-          if (value < 0.01) {
-            return value.toFixed(5); // 保留5位小數
-          }
-          return value.toFixed(4); // 保留4位小數
-        };
-
-        // 添加數值標籤
-        const labels = [0, ...breaks];
+        // 添加 level 標籤 (1-5)
+        const levels = [1, 2, 3, 4, 5];
         legend
           .selectAll('.legend-label')
-          .data(labels)
+          .data(levels)
           .enter()
           .append('text')
           .attr('class', 'legend-label')
-          .attr('x', (d, i) => (i * legendWidth) / (labels.length - 1))
+          .attr('x', (d, i) => (i + 0.5) * (legendWidth / levels.length))
           .attr('y', legendHeight + labelSpacing)
           .attr('font-size', '12px')
           .attr('fill', '#333')
           .attr('text-anchor', 'middle')
-          .text((d) => formatValue(d));
+          .text((d) => `Level ${d}`);
 
         // 添加各級數量標籤
         if (classCounts) {
@@ -1261,7 +1241,7 @@
           .attr('font-weight', 'bold')
           .attr('fill', '#333')
           .attr('text-anchor', 'middle')
-          .text('ratio_China (比例值)');
+          .text('ratio_China (比例值) - Level');
       };
 
       /**
@@ -1309,7 +1289,9 @@
             .zoom()
             .scaleExtent([0.5, 50]) // 允許縮放 0.5x 到 50x
             .on('zoom', (event) => {
-              g.attr('transform', event.transform);
+              if (g && g.node() && g.node().parentNode) {
+                g.attr('transform', event.transform);
+              }
             });
 
           svg.call(zoom);
@@ -1449,8 +1431,19 @@
         window.removeEventListener('resize', handleResize);
 
         if (svg) {
+          // 完全移除 zoom 行為
+          try {
+            if (zoom) {
+              svg.on('.zoom', null);
+              svg.call(zoom.on('zoom', null));
+            }
+          } catch (e) {
+            console.warn('[MapTab] 移除 zoom 行為時出錯:', e);
+          }
           svg.remove();
           svg = null;
+          g = null;
+          zoom = null;
         }
 
         // 清理工具提示
