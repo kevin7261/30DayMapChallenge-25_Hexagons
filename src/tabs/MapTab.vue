@@ -1015,6 +1015,9 @@
           if (!hexData.value) {
             await loadHexData();
           }
+          if (!countyData.value) {
+            await loadCountyData();
+          }
           // 清理舊的 SVG 或其他視圖
           cleanupOtherViews();
           // 初始化 CesiumJS 3D 地圖
@@ -1023,6 +1026,9 @@
           // MapLibre 3D 模式
           if (!hexData.value) {
             await loadHexData();
+          }
+          if (!countyData.value) {
+            await loadCountyData();
           }
           // 清理舊的 SVG 或其他視圖
           cleanupOtherViews();
@@ -1088,6 +1094,11 @@
           if (!mapContainer.value || !hexData.value) {
             console.error('[MapTab] 無法初始化 CesiumJS: 容器或數據不存在');
             return;
+          }
+
+          // 載入縣市界線數據（如果尚未載入）
+          if (!countyData.value) {
+            await loadCountyData();
           }
 
           // 檢查 Cesium 是否已載入（從 CDN）
@@ -1210,6 +1221,46 @@
           );
 
           console.log('[MapTab] CesiumJS 3D - 有效的 features 數量:', validFeatures.length);
+
+          // 繪製台灣縣市界線（白色邊框）
+          if (countyData.value && countyData.value.features) {
+            countyData.value.features.forEach((countyFeature) => {
+              if (countyFeature.geometry && countyFeature.geometry.type === 'Polygon') {
+                const coordinates = countyFeature.geometry.coordinates[0];
+                const positions = coordinates.map((coord) =>
+                  Cesium.Cartesian3.fromDegrees(coord[0], coord[1], 0)
+                );
+
+                // 創建縣市界線（白色邊框，無填充）
+                cesiumViewer.entities.add({
+                  polyline: {
+                    positions: positions.concat([positions[0]]), // 閉合多邊形
+                    width: 2.0,
+                    material: Cesium.Color.WHITE.withAlpha(0.8),
+                    clampToGround: true, // 貼地顯示
+                  },
+                });
+              } else if (countyFeature.geometry && countyFeature.geometry.type === 'MultiPolygon') {
+                // 處理 MultiPolygon 類型
+                countyFeature.geometry.coordinates.forEach((polygon) => {
+                  const coordinates = polygon[0];
+                  const positions = coordinates.map((coord) =>
+                    Cesium.Cartesian3.fromDegrees(coord[0], coord[1], 0)
+                  );
+
+                  cesiumViewer.entities.add({
+                    polyline: {
+                      positions: positions.concat([positions[0]]),
+                      width: 2.0,
+                      material: Cesium.Color.WHITE.withAlpha(0.8),
+                      clampToGround: true,
+                    },
+                  });
+                });
+              }
+            });
+            console.log('[MapTab] CesiumJS 3D - 縣市界線繪製完成');
+          }
 
           // 為每個 feature 創建 3D 柱狀圖（高度由 level 決定）
           validFeatures.forEach((feature) => {
@@ -1341,6 +1392,11 @@
           if (!mapContainer.value || !hexData.value) {
             console.error('[MapTab] 無法初始化 MapLibre GL: 容器或數據不存在');
             return;
+          }
+
+          // 載入縣市界線數據（如果尚未載入）
+          if (!countyData.value) {
+            await loadCountyData();
           }
 
           // 創建 MapLibre Map（使用 Carto Dark 底圖）
@@ -1482,6 +1538,27 @@
               '[MapTab] MapLibre GL 3D - 有效的 features 數量:',
               featuresWithHeight.length
             );
+
+            // 添加縣市界線 GeoJSON 源
+            if (countyData.value && countyData.value.features) {
+              maplibreMap.addSource('county-boundaries', {
+                type: 'geojson',
+                data: countyData.value,
+              });
+
+              // 添加縣市界線圖層（白色邊框）
+              maplibreMap.addLayer({
+                id: 'county-boundaries-line',
+                type: 'line',
+                source: 'county-boundaries',
+                paint: {
+                  'line-color': '#ffffff',
+                  'line-width': 2,
+                  'line-opacity': 0.8,
+                },
+              });
+              console.log('[MapTab] MapLibre GL 3D - 縣市界線繪製完成');
+            }
 
             // 添加 GeoJSON 源
             maplibreMap.addSource('hexagons-3d', {
@@ -2009,10 +2086,15 @@
         } else if (displayMode.value === 'cesium3d') {
           // CesiumJS 3D 模式
           console.log('[MapTab] 開始載入 CesiumJS 3D 模式數據...');
-          const hexLoaded = await loadHexData();
+          const [hexLoaded, countyLoaded] = await Promise.all([loadHexData(), loadCountyData()]);
 
           if (!hexLoaded) {
             console.error('[MapTab] 無法載入六角形網格數據');
+            return;
+          }
+
+          if (!countyLoaded) {
+            console.error('[MapTab] 無法載入縣市界線數據');
             return;
           }
 
@@ -2022,10 +2104,15 @@
         } else if (displayMode.value === 'maplibre3d') {
           // MapLibre 3D 模式
           console.log('[MapTab] 開始載入 MapLibre 3D 模式數據...');
-          const hexLoaded = await loadHexData();
+          const [hexLoaded, countyLoaded] = await Promise.all([loadHexData(), loadCountyData()]);
 
           if (!hexLoaded) {
             console.error('[MapTab] 無法載入六角形網格數據');
+            return;
+          }
+
+          if (!countyLoaded) {
+            console.error('[MapTab] 無法載入縣市界線數據');
             return;
           }
 
