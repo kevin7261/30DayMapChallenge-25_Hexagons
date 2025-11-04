@@ -300,7 +300,7 @@
 
           // 載入六角形網格 GeoJSON 檔案
           const hexResponse = await fetch(
-            `${process.env.BASE_URL}data/geojson/pointy_final_with_levels.geojson`
+            `${process.env.BASE_URL}data/geojson/pointy_final_with_levels_over5.geojson`
           );
 
           // 檢查響應
