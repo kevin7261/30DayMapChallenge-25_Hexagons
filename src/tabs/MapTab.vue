@@ -225,7 +225,7 @@
 
       /**
        * 六角形網格 GeoJSON 數據
-       * 來源：pointy_final_with_levels.geojson
+       * 來源：pointy_final_with_levels_over5.geojson
        * @type {Ref<Object|null>}
        */
       const hexData = ref(null);
@@ -1112,7 +1112,7 @@
             baseLayerPicker: false,
             geocoder: false,
             homeButton: false,
-            infoBox: false,
+            infoBox: true,
             sceneModePicker: false,
             selectionIndicator: false,
             timeline: false,
@@ -1238,20 +1238,89 @@
             });
           });
 
+          // 格式化 village_list 為 HTML
+          const formatVillageList = (villageList) => {
+            if (!villageList) return 'N/A';
+
+            // 如果是字符串，嘗試解析
+            let villages = villageList;
+            if (typeof villageList === 'string') {
+              try {
+                // 先嘗試標準 JSON 解析
+                villages = JSON.parse(villageList);
+              } catch (e) {
+                try {
+                  // 如果是 Python 格式的字符串（使用單引號），先轉換為標準 JSON
+                  // 將單引號改為雙引號，None 改為 null
+                  const jsonString = villageList
+                    .replace(/'/g, '"')
+                    .replace(/None/g, 'null')
+                    .replace(/True/g, 'true')
+                    .replace(/False/g, 'false');
+                  villages = JSON.parse(jsonString);
+                } catch (e2) {
+                  return villageList; // 如果解析失敗，直接返回字符串
+                }
+              }
+            }
+
+            // 如果不是數組，返回原值
+            if (!Array.isArray(villages)) {
+              return String(villages);
+            }
+
+            // 格式化每個 village 項目
+            if (villages.length === 0) return '無資料';
+
+            return villages
+              .map((village, index) => {
+                if (typeof village === 'object' && village !== null) {
+                  const items = Object.keys(village)
+                    .map((key) => {
+                      const val = village[key];
+                      const displayVal = val === null || val === undefined ? 'N/A' : val;
+                      return `${key}: ${displayVal}`;
+                    })
+                    .join(', ');
+                  return `${index + 1}. ${items}`;
+                }
+                return `${index + 1}. ${village}`;
+              })
+              .join('<br>');
+          };
+
           // 添加點擊事件顯示屬性信息
           const handler = new Cesium.ScreenSpaceEventHandler(cesiumViewer.scene.canvas);
           handler.setInputAction((click) => {
             const pickedObject = cesiumViewer.scene.pick(click.position);
             if (Cesium.defined(pickedObject) && pickedObject.id && pickedObject.id.properties) {
               const properties = pickedObject.id.properties;
-              let info = 'Properties:\n';
+              let html = '<div style="max-width: 400px; max-height: 500px; overflow-y: auto;">';
+
               // 顯示所有屬性
               for (const key in properties) {
                 if (Object.prototype.hasOwnProperty.call(properties, key)) {
-                  info += `${key}: ${properties[key].getValue()}\n`;
+                  const value = properties[key].getValue();
+
+                  if (key === 'village_list' || key === 'villageList') {
+                    // 特殊處理 village_list
+                    html += `<div><strong>${key}:</strong><br>${formatVillageList(value)}</div><br>`;
+                  } else {
+                    html += `<div><strong>${key}:</strong> ${value}</div>`;
+                  }
                 }
               }
-              console.log('[MapTab] CesiumJS - 點擊的實體信息:', info);
+
+              html += '</div>';
+
+              // 使用 Cesium InfoBox 顯示
+              console.log('[MapTab] CesiumJS - 點擊的實體信息:', html);
+
+              // 顯示在 infoBox 中
+              if (cesiumViewer.infoBox && pickedObject.id) {
+                cesiumViewer.selectedEntity = pickedObject.id;
+                cesiumViewer.infoBox.viewModel.description = html;
+              }
             }
           }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
 
@@ -1438,19 +1507,82 @@
 
             // 不添加邊框圖層（移除白色邊框）
 
+            // 格式化 village_list 為 HTML
+            const formatVillageList = (villageList) => {
+              if (!villageList) return 'N/A';
+
+              // 如果是字符串，嘗試解析
+              let villages = villageList;
+              if (typeof villageList === 'string') {
+                try {
+                  // 先嘗試標準 JSON 解析
+                  villages = JSON.parse(villageList);
+                } catch (e) {
+                  try {
+                    // 如果是 Python 格式的字符串（使用單引號），先轉換為標準 JSON
+                    // 將單引號改為雙引號，None 改為 null
+                    const jsonString = villageList
+                      .replace(/'/g, '"')
+                      .replace(/None/g, 'null')
+                      .replace(/True/g, 'true')
+                      .replace(/False/g, 'false');
+                    villages = JSON.parse(jsonString);
+                  } catch (e2) {
+                    return villageList; // 如果解析失敗，直接返回字符串
+                  }
+                }
+              }
+
+              // 如果不是數組，返回原值
+              if (!Array.isArray(villages)) {
+                return String(villages);
+              }
+
+              // 格式化每個 village 項目
+              if (villages.length === 0) return '無資料';
+
+              return villages
+                .map((village, index) => {
+                  if (typeof village === 'object' && village !== null) {
+                    const items = Object.keys(village)
+                      .map((key) => {
+                        const val = village[key];
+                        const displayVal = val === null || val === undefined ? 'N/A' : val;
+                        return `<span style="margin-right: 10px;"><strong>${key}:</strong> ${displayVal}</span>`;
+                      })
+                      .join('');
+                    return `<div style="margin: 5px 0; padding: 5px; background: rgba(255,255,255,0.1); border-radius: 3px;">${index + 1}. ${items}</div>`;
+                  }
+                  return `<div style="margin: 5px 0;">${index + 1}. ${village}</div>`;
+                })
+                .join('');
+            };
+
             // 添加點擊事件
             maplibreMap.on('click', 'hexagons-3d-fill', (e) => {
               const properties = e.features[0].properties;
               console.log('[MapTab] MapLibre GL - 點擊的實體信息:', properties);
 
+              // 格式化所有屬性為 HTML
+              let html = '<div style="max-width: 400px; max-height: 500px; overflow-y: auto;">';
+
+              Object.keys(properties).forEach((key) => {
+                const value = properties[key];
+
+                if (key === 'village_list' || key === 'villageList') {
+                  // 特殊處理 village_list
+                  html += `<div style="margin-bottom: 10px;"><strong>${key}:</strong><div style="margin-top: 5px;">${formatVillageList(value)}</div></div>`;
+                } else {
+                  html += `<div style="margin-bottom: 5px;"><strong>${key}:</strong> ${value}</div>`;
+                }
+              });
+
+              html += '</div>';
+
               // 創建彈出框
-              new maplibregl.Popup()
+              new maplibregl.Popup({ maxWidth: '450px' })
                 .setLngLat(e.lngLat)
-                .setHTML(
-                  Object.keys(properties)
-                    .map((key) => `<strong>${key}:</strong> ${properties[key]}`)
-                    .join('<br>')
-                )
+                .setHTML(html)
                 .addTo(maplibreMap);
             });
 
