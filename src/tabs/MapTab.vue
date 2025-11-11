@@ -231,6 +231,29 @@
       const hexData = ref(null);
 
       /**
+       * 六角形網格 GeoJSON 數據 (模式2)
+       * 來源：hex_grid_pointy_with_population.geojson
+       * @type {Ref<Object|null>}
+       */
+      const hexData2 = ref(null);
+      const hexData2Stats = ref({
+        min: null,
+        max: null,
+        positiveCount: 0,
+      });
+      const hexData2Breaks = ref([]);
+      const prideColors = [
+        '#750787', // Violet
+        '#004DFF', // Blue
+        '#008026', // Green
+        '#FFED00', // Yellow
+        '#FF8C00', // Orange
+        '#E40303', // Red
+      ];
+      const getPrideColorByLevel = (level) =>
+        level >= 1 && level <= prideColors.length ? prideColors[level - 1] : '#f0f0f0';
+
+      /**
        * 登革熱網格 GeoJSON 數據（保留以兼容）
        * 來源：dengue_grid_counts_1km_2023_land_only.geojson
        * @type {Ref<Object|null>}
@@ -319,6 +342,225 @@
           console.error('[MapTab] 六角形網格數據載入失敗:', error);
           return false;
         }
+      };
+
+      /**
+       * 📥 載入六角形網格 GeoJSON 數據 (模式2)
+       */
+      const loadHexData2 = async () => {
+        try {
+          console.log('[MapTab] 開始載入六角形網格 GeoJSON 數據 (模式2)...');
+
+          const hexResponse = await fetch(
+            `${process.env.BASE_URL}data/geojson/hex_grid_pointy_with_population.geojson`
+          );
+
+          if (!hexResponse.ok) {
+            throw new Error(`六角形網格數據 (模式2) 載入失敗: HTTP ${hexResponse.status}`);
+          }
+
+          hexData2.value = await hexResponse.json();
+
+          const features = Array.isArray(hexData2.value?.features) ? hexData2.value.features : [];
+          const positiveValues = features
+            .map((feature) => Number(feature?.properties?.['有偶_相同性別_總計']) || 0)
+            .filter((value) => Number.isFinite(value) && value > 0);
+
+          const min = positiveValues.length > 0 ? Math.min(...positiveValues) : 0;
+          const max = positiveValues.length > 0 ? Math.max(...positiveValues) : 0;
+          hexData2Stats.value = {
+            min,
+            max,
+            positiveCount: positiveValues.length,
+          };
+
+          console.log('[MapTab] 六角形網格數據 (模式2) 載入成功');
+          console.log('  - 網格數量:', features.length);
+          console.log('  - 有效數量（數值 > 0）:', positiveValues.length);
+          console.log('  - 數值範圍:', { min, max });
+
+          ensureHexData2Levels();
+
+          return true;
+        } catch (error) {
+          console.error('[MapTab] 六角形網格數據 (模式2) 載入失敗:', error);
+          return false;
+        }
+      };
+
+      /**
+       * 📊 計算自然分級 (Jenks Natural Breaks)
+       */
+      const calculateNaturalBreaks = (values, classCount) => {
+        if (!Array.isArray(values) || values.length === 0) {
+          return null;
+        }
+
+        const sorted = values.filter((value) => Number.isFinite(value)).sort((a, b) => a - b);
+
+        if (sorted.length === 0) {
+          return null;
+        }
+
+        const uniqueValues = Array.from(new Set(sorted));
+        if (uniqueValues.length <= classCount) {
+          const breaks = [uniqueValues[0]];
+          for (let i = 1; i < uniqueValues.length; i += 1) {
+            breaks.push(uniqueValues[i]);
+          }
+          while (breaks.length < classCount + 1) {
+            breaks.push(uniqueValues[uniqueValues.length - 1]);
+          }
+          return breaks;
+        }
+
+        const lowerClassLimits = Array(sorted.length + 1)
+          .fill(0)
+          .map(() => Array(classCount + 1).fill(0));
+        const varianceCombinations = Array(sorted.length + 1)
+          .fill(0)
+          .map(() => Array(classCount + 1).fill(0));
+
+        for (let i = 1; i <= classCount; i += 1) {
+          lowerClassLimits[1][i] = 1;
+          varianceCombinations[1][i] = 0;
+          for (let j = 2; j <= sorted.length; j += 1) {
+            varianceCombinations[j][i] = Infinity;
+          }
+        }
+
+        const sum = Array(sorted.length + 1).fill(0);
+        const sumSquares = Array(sorted.length + 1).fill(0);
+
+        for (let i = 1; i <= sorted.length; i += 1) {
+          const val = sorted[i - 1];
+          sum[i] = sum[i - 1] + val;
+          sumSquares[i] = sumSquares[i - 1] + val * val;
+          varianceCombinations[i][1] = sumSquares[i] - (sum[i] * sum[i]) / i;
+          lowerClassLimits[i][1] = 1;
+        }
+
+        for (let classes = 2; classes <= classCount; classes += 1) {
+          for (let item = classes; item <= sorted.length; item += 1) {
+            let variance = Infinity;
+            let bestLowerClass = classes - 1;
+
+            for (let i = item; i >= classes; i -= 1) {
+              const count = item - i + 1;
+              const sumRange = sum[item] - sum[i - 1];
+              const sumSquaresRange = sumSquares[item] - sumSquares[i - 1];
+              const currentVariance = sumSquaresRange - (sumRange * sumRange) / count;
+
+              if (currentVariance < 0) {
+                continue;
+              }
+
+              const totalVariance = currentVariance + varianceCombinations[i - 1][classes - 1];
+
+              if (totalVariance < variance) {
+                variance = totalVariance;
+                bestLowerClass = i;
+              }
+            }
+
+            varianceCombinations[item][classes] = variance;
+            lowerClassLimits[item][classes] = bestLowerClass;
+          }
+        }
+
+        const breaks = Array(classCount + 1).fill(0);
+        breaks[classCount] = sorted[sorted.length - 1];
+
+        let count = classCount;
+        let k = sorted.length;
+
+        while (count > 0) {
+          const idx = lowerClassLimits[k][count];
+          breaks[count - 1] = sorted[idx - 1];
+          k = idx - 1;
+          count -= 1;
+        }
+
+        breaks[0] = sorted[0];
+
+        for (let i = 1; i < breaks.length; i += 1) {
+          if (breaks[i] < breaks[i - 1]) {
+            breaks[i] = breaks[i - 1];
+          }
+        }
+
+        return breaks;
+      };
+
+      /**
+       * 🏷️ 將自然分級結果指派給 features
+       */
+      const assignLevelsToFeatures = (features, breaks) => {
+        if (!Array.isArray(features) || !Array.isArray(breaks) || breaks.length < 2) {
+          return;
+        }
+
+        features.forEach((feature) => {
+          const value = Number(feature?.properties?.['有偶_相同性別_總計']) || 0;
+          let level = 0;
+          if (value > 0) {
+            for (let i = 0; i < breaks.length - 1; i += 1) {
+              const lower = breaks[i];
+              const upper = breaks[i + 1];
+              if (value >= lower && value <= upper) {
+                level = i + 1;
+                break;
+              }
+            }
+          }
+          feature.properties = {
+            ...feature.properties,
+            pride_level: level,
+          };
+        });
+      };
+
+      /**
+       * ♻️ 確保模式2資料具備六色等級
+       */
+      const ensureHexData2Levels = () => {
+        if (!hexData2.value || !Array.isArray(hexData2.value.features)) {
+          console.warn('[MapTab] ensureHexData2Levels: hexData2 尚未載入或格式不正確');
+          return;
+        }
+
+        const features = hexData2.value.features;
+        const values = features
+          .map((feature) => Number(feature?.properties?.['有偶_相同性別_總計']) || 0)
+          .filter((value) => Number.isFinite(value) && value > 0);
+
+        if (values.length === 0) {
+          console.warn('[MapTab] ensureHexData2Levels: 無正值可供分級');
+          hexData2Breaks.value = [];
+          assignLevelsToFeatures(features, []);
+          return;
+        }
+
+        const classCount = prideColors.length;
+        const breaks = calculateNaturalBreaks(values, classCount);
+
+        if (!breaks) {
+          console.warn('[MapTab] ensureHexData2Levels: 無法計算自然分級，採用等距分級');
+          const min = Math.min(...values);
+          const max = Math.max(...values);
+          const step = (max - min) / classCount;
+          const fallbackBreaks = [min];
+          for (let i = 1; i <= classCount; i += 1) {
+            fallbackBreaks.push(min + step * i);
+          }
+          hexData2Breaks.value = fallbackBreaks;
+          assignLevelsToFeatures(features, fallbackBreaks);
+          return;
+        }
+
+        hexData2Breaks.value = breaks;
+        assignLevelsToFeatures(features, breaks);
+        console.log('[MapTab] ensureHexData2Levels: 計算完成', breaks);
       };
 
       /**
@@ -835,6 +1077,8 @@
             await loadHexData();
           }
 
+          cleanup3DViews();
+
           // 清除舊的 SVG（如果從其他模式切換過來）
           if (svg && !projection) {
             // 完全移除 zoom 行為
@@ -928,6 +1172,8 @@
           }
           // 清除縣市界線數據（不需要）
           countyData.value = null;
+
+          cleanup3DViews();
 
           // 清除舊的 SVG（如果從地圖模式切換過來）
           if (svg && !projection) {
@@ -1034,6 +1280,234 @@
           cleanupOtherViews();
           // 初始化 MapLibre 3D 地圖
           await initMapLibre3D();
+        } else if (displayMode.value === 'map2') {
+          if (!countyData.value) {
+            await loadCountyData();
+          }
+          if (!hexData2.value) {
+            await loadHexData2();
+          } else {
+            ensureHexData2Levels();
+          }
+
+          cleanup3DViews();
+
+          if (svg && !projection) {
+            try {
+              if (zoom) {
+                svg.on('.zoom', null);
+                svg.call(zoom.on('zoom', null));
+              }
+            } catch (e) {
+              console.warn('[MapTab] 移除 zoom 行為時出錯:', e);
+            }
+            svg.remove();
+            svg = null;
+            g = null;
+            zoom = null;
+          }
+
+          if (!projection || !path) {
+            const rect = mapContainer.value.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0) {
+              const width = rect.width;
+              const height = rect.height;
+
+              if (svg) {
+                if (zoom) {
+                  svg.on('.zoom', null);
+                  svg.on('mousedown.zoom', null);
+                  svg.on('mousemove.zoom', null);
+                  svg.on('mouseup.zoom', null);
+                  svg.on('touchstart.zoom', null);
+                  svg.on('touchmove.zoom', null);
+                  svg.on('touchend.zoom', null);
+                  svg.on('wheel.zoom', null);
+                }
+                svg.remove();
+                svg = null;
+                g = null;
+                zoom = null;
+              }
+
+              svg = d3
+                .select(mapContainer.value)
+                .append('svg')
+                .attr('width', width)
+                .attr('height', height)
+                .style('background', '#ffffff');
+
+              projection = d3
+                .geoMercator()
+                .center([121, 23.5])
+                .scale(12000)
+                .translate([width / 2, height / 2]);
+
+              path = d3.geoPath().projection(projection);
+              g = svg.append('g');
+
+              zoom = d3
+                .zoom()
+                .scaleExtent([0.5, 50])
+                .on('zoom', (event) => {
+                  if (g) {
+                    g.attr('transform', event.transform);
+                  }
+                });
+
+              svg.call(zoom);
+              svg.call(zoom.transform, d3.zoomIdentity);
+
+              createTooltip();
+              isMapReady.value = true;
+            }
+          } else if (svg && zoom) {
+            svg.call(zoom.transform, d3.zoomIdentity);
+          }
+
+          drawCounties();
+          drawHexGrid2();
+        } else if (displayMode.value === 'grid2') {
+          if (!hexData2.value) {
+            await loadHexData2();
+          } else {
+            ensureHexData2Levels();
+          }
+          countyData.value = null;
+
+          cleanup3DViews();
+
+          if (svg && !projection) {
+            if (zoom) {
+              svg.on('.zoom', null);
+            }
+            svg.remove();
+            svg = null;
+            g = null;
+            zoom = null;
+          }
+
+          if (!projection || !path) {
+            const rect = mapContainer.value.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0) {
+              const width = rect.width;
+              const height = rect.height;
+
+              if (svg) {
+                if (zoom) {
+                  svg.on('.zoom', null);
+                  svg.on('mousedown.zoom', null);
+                  svg.on('mousemove.zoom', null);
+                  svg.on('mouseup.zoom', null);
+                  svg.on('touchstart.zoom', null);
+                  svg.on('touchmove.zoom', null);
+                  svg.on('touchend.zoom', null);
+                  svg.on('wheel.zoom', null);
+                }
+                svg.remove();
+                svg = null;
+                g = null;
+                zoom = null;
+              }
+
+              svg = d3
+                .select(mapContainer.value)
+                .append('svg')
+                .attr('width', width)
+                .attr('height', height)
+                .style('background', '#ffffff');
+
+              projection = d3
+                .geoMercator()
+                .center([121, 23.5])
+                .scale(12000)
+                .translate([width / 2, height / 2]);
+
+              path = d3.geoPath().projection(projection);
+              g = svg.append('g');
+
+              zoom = d3
+                .zoom()
+                .scaleExtent([0.5, 50])
+                .on('zoom', (event) => {
+                  if (g) {
+                    g.attr('transform', event.transform);
+                  }
+                });
+
+              svg.call(zoom);
+              svg.call(zoom.transform, d3.zoomIdentity);
+
+              createTooltip();
+              isMapReady.value = true;
+            }
+          } else if (svg && zoom) {
+            svg.call(zoom.transform, d3.zoomIdentity);
+          }
+
+          drawHexGridOnly2();
+        } else if (displayMode.value === 'cesium3d2') {
+          if (!hexData2.value) {
+            await loadHexData2();
+          } else {
+            ensureHexData2Levels();
+          }
+          if (!countyData.value) {
+            await loadCountyData();
+          }
+          cleanupOtherViews();
+          await initCesium3D2();
+        } else if (displayMode.value === 'maplibre3d2') {
+          if (!hexData2.value) {
+            await loadHexData2();
+          } else {
+            ensureHexData2Levels();
+          }
+          if (!countyData.value) {
+            await loadCountyData();
+          }
+          cleanupOtherViews();
+          await initMapLibre3D2();
+        }
+      };
+
+      /**
+       * 🧹 只清理 3D 視圖（Cesium / MapLibre），保留 D3 狀態
+       */
+      const cleanup3DViews = () => {
+        let cleared = false;
+
+        if (cesiumViewer) {
+          try {
+            cesiumViewer.destroy();
+          } catch (e) {
+            console.warn('[MapTab] 清理 Cesium Viewer 時出錯:', e);
+          }
+          cesiumViewer = null;
+          cleared = true;
+        }
+
+        if (maplibreMap) {
+          try {
+            maplibreMap.remove();
+          } catch (e) {
+            console.warn('[MapTab] 清理 MapLibre Map 時出錯:', e);
+          }
+          maplibreMap = null;
+          cleared = true;
+        }
+
+        if (cleared && mapContainer.value) {
+          mapContainer.value.innerHTML = '';
+          svg = null;
+          g = null;
+          zoom = null;
+          projection = null;
+          path = null;
+          if (tooltip) {
+            tooltip.remove();
+            tooltip = null;
+          }
         }
       };
 
@@ -1685,6 +2159,514 @@
       };
 
       /**
+       * 🌍 初始化 CesiumJS 3D 地圖 (模式2)
+       */
+      const initCesium3D2 = async () => {
+        try {
+          console.log('[MapTab] 開始初始化 CesiumJS 3D 地圖（模式2）');
+
+          if (!mapContainer.value || !hexData2.value) {
+            console.error('[MapTab] 無法初始化 CesiumJS（模式2）: 容器或數據不存在');
+            return;
+          }
+
+          ensureHexData2Levels();
+
+          if (!countyData.value) {
+            await loadCountyData();
+          }
+
+          if (typeof window.Cesium === 'undefined') {
+            console.error('[MapTab] CesiumJS 尚未載入，請確保已引入 CDN 腳本');
+            return;
+          }
+
+          // eslint-disable-next-line no-undef
+          const Cesium = window.Cesium;
+
+          Cesium.Ion.defaultAccessToken =
+            'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiIxYjJiZjlhZC1mZDNkLTRiZWEtYjExNy1iZDI1OWQ5ZmJlZmEiLCJpZCI6MzU1MDgxLCJpYXQiOjE3NjE3MTc5NTl9.ivNUz20WJNOvyTB6vzB8xHNWNSzgl06vBAGOuZLNKs4';
+
+          const worldTerrain = await Cesium.createWorldTerrainAsync();
+
+          cesiumViewer = new Cesium.Viewer(mapContainer.value, {
+            terrainProvider: worldTerrain,
+            baseLayerPicker: false,
+            geocoder: false,
+            homeButton: false,
+            infoBox: true,
+            sceneModePicker: false,
+            selectionIndicator: false,
+            timeline: false,
+            animation: false,
+            fullscreenButton: false,
+            vrButton: false,
+            navigationHelpButton: false,
+          });
+
+          cesiumViewer.camera.setView({
+            destination: Cesium.Cartesian3.fromDegrees(121.0, 23.5, 500000),
+            orientation: {
+              heading: 0.0,
+              pitch: -0.5,
+              roll: 0.0,
+            },
+          });
+
+          const calculateHexWidth = () => {
+            if (
+              !hexData2.value ||
+              !hexData2.value.features ||
+              hexData2.value.features.length === 0
+            ) {
+              return 6000;
+            }
+
+            const firstHex = hexData2.value.features.find(
+              (f) =>
+                f.geometry && f.geometry.coordinates?.[0] && f.geometry.coordinates[0].length >= 4
+            );
+
+            if (!firstHex || !firstHex.geometry.coordinates[0]) {
+              return 6000;
+            }
+
+            const coords = firstHex.geometry.coordinates[0];
+            const p1 = coords[0];
+            const p4 = coords[3];
+
+            const R = 6371000;
+            const lat1 = (p1[1] * Math.PI) / 180;
+            const lat4 = (p4[1] * Math.PI) / 180;
+            const dLat = ((p4[1] - p1[1]) * Math.PI) / 180;
+            const dLon = ((p4[0] - p1[0]) * Math.PI) / 180;
+            const a =
+              Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+              Math.cos(lat1) * Math.cos(lat4) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            const width = R * c;
+
+            console.log('[MapTab] CesiumJS 3D（模式2）- 計算的六角形寬度（米）:', width);
+            return width;
+          };
+
+          const hexWidth = calculateHexWidth();
+
+          const valueKey = '有偶_相同性別_總計';
+          const getValue = (feature) => Number(feature?.properties?.[valueKey]) || 0;
+
+          const { min, max } = hexData2Stats.value || {};
+          const domainMin = Number.isFinite(min) && min > 0 ? min : 0;
+          const rawMax = Number.isFinite(max) && max > 0 ? max : domainMin;
+          const effectiveMax = rawMax > domainMin ? rawMax : domainMin === 0 ? 1 : domainMin * 1.01;
+
+          const heightScale = d3
+            .scaleLinear()
+            .domain([domainMin, effectiveMax])
+            .range([hexWidth * 0.5, hexWidth * 8]);
+
+          const features = Array.isArray(hexData2.value.features) ? hexData2.value.features : [];
+          const validFeatures = features.filter(
+            (feature) =>
+              feature.geometry &&
+              feature.geometry.type === 'Polygon' &&
+              (feature.properties?.pride_level || 0) > 0
+          );
+
+          if (countyData.value && countyData.value.features) {
+            countyData.value.features.forEach((countyFeature) => {
+              if (countyFeature.geometry && countyFeature.geometry.type === 'Polygon') {
+                const coordinates = countyFeature.geometry.coordinates[0];
+                const positions = coordinates.map((coord) =>
+                  Cesium.Cartesian3.fromDegrees(coord[0], coord[1], 0)
+                );
+
+                cesiumViewer.entities.add({
+                  polyline: {
+                    positions: positions.concat([positions[0]]),
+                    width: 2.0,
+                    material: Cesium.Color.WHITE.withAlpha(0.8),
+                    clampToGround: true,
+                  },
+                });
+              } else if (countyFeature.geometry && countyFeature.geometry.type === 'MultiPolygon') {
+                countyFeature.geometry.coordinates.forEach((polygon) => {
+                  const coordinates = polygon[0];
+                  const positions = coordinates.map((coord) =>
+                    Cesium.Cartesian3.fromDegrees(coord[0], coord[1], 0)
+                  );
+
+                  cesiumViewer.entities.add({
+                    polyline: {
+                      positions: positions.concat([positions[0]]),
+                      width: 2.0,
+                      material: Cesium.Color.WHITE.withAlpha(0.8),
+                      clampToGround: true,
+                    },
+                  });
+                });
+              }
+            });
+          }
+
+          validFeatures.forEach((feature) => {
+            const value = getValue(feature);
+            const level = feature.properties?.pride_level || 0;
+            const color = Cesium.Color.fromCssColorString(getPrideColorByLevel(level)).withAlpha(
+              0.85
+            );
+            const coordinates = feature.geometry.coordinates[0];
+            const extrudedHeight = heightScale(Math.min(effectiveMax, Math.max(domainMin, value)));
+            const hierarchy = coordinates.map((coord) =>
+              Cesium.Cartesian3.fromDegrees(coord[0], coord[1], 0)
+            );
+
+            cesiumViewer.entities.add({
+              polygon: {
+                hierarchy,
+                material: color,
+                height: 0,
+                extrudedHeight,
+                outline: false,
+              },
+              properties: feature.properties,
+            });
+          });
+
+          const formatVillageList = (villageList) => {
+            if (!villageList) return 'N/A';
+            let villages = villageList;
+            if (typeof villageList === 'string') {
+              try {
+                villages = JSON.parse(villageList);
+              } catch (e) {
+                try {
+                  const jsonString = villageList
+                    .replace(/'/g, '"')
+                    .replace(/None/g, 'null')
+                    .replace(/True/g, 'true')
+                    .replace(/False/g, 'false');
+                  villages = JSON.parse(jsonString);
+                } catch (e2) {
+                  return villageList;
+                }
+              }
+            }
+
+            if (!Array.isArray(villages)) {
+              return String(villages);
+            }
+
+            if (villages.length === 0) return '無資料';
+
+            return villages
+              .map((village, index) => {
+                if (typeof village === 'object' && village !== null) {
+                  const items = Object.keys(village)
+                    .map((key) => {
+                      const val = village[key];
+                      const displayVal = val === null || val === undefined ? 'N/A' : val;
+                      return `${key}: ${displayVal}`;
+                    })
+                    .join(', ');
+                  return `${index + 1}. ${items}`;
+                }
+                return `${index + 1}. ${village}`;
+              })
+              .join('<br>');
+          };
+
+          const handler = new Cesium.ScreenSpaceEventHandler(cesiumViewer.scene.canvas);
+          handler.setInputAction((click) => {
+            const pickedObject = cesiumViewer.scene.pick(click.position);
+            if (Cesium.defined(pickedObject) && pickedObject.id && pickedObject.id.properties) {
+              const properties = pickedObject.id.properties;
+              let html = '<div style="max-width: 420px; max-height: 520px; overflow-y: auto;">';
+
+              for (const key in properties) {
+                if (Object.prototype.hasOwnProperty.call(properties, key)) {
+                  const value = properties[key].getValue();
+
+                  if (key === 'village_list' || key === 'villageList') {
+                    html += `<div><strong>${key}:</strong><br>${formatVillageList(value)}</div><br>`;
+                  } else {
+                    html += `<div><strong>${key}:</strong> ${value}</div>`;
+                  }
+                }
+              }
+
+              html += '</div>';
+
+              if (cesiumViewer.infoBox && pickedObject.id) {
+                cesiumViewer.selectedEntity = pickedObject.id;
+                cesiumViewer.infoBox.viewModel.description = html;
+              }
+            }
+          }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+          isMapReady.value = true;
+          console.log('[MapTab] CesiumJS 3D 地圖（模式2）初始化完成');
+        } catch (error) {
+          console.error('[MapTab] CesiumJS 3D 地圖（模式2）初始化失敗:', error);
+        }
+      };
+
+      /**
+       * 🗺️ 初始化 MapLibre GL 3D 地圖 (模式2)
+       */
+      const initMapLibre3D2 = async () => {
+        try {
+          console.log('[MapTab] 開始初始化 MapLibre GL 3D 地圖（模式2）');
+
+          if (!mapContainer.value || !hexData2.value) {
+            console.error('[MapTab] 無法初始化 MapLibre GL（模式2）: 容器或數據不存在');
+            return;
+          }
+
+          ensureHexData2Levels();
+
+          if (!countyData.value) {
+            await loadCountyData();
+          }
+
+          maplibreMap = new maplibregl.Map({
+            container: mapContainer.value,
+            style: {
+              version: 8,
+              sources: {
+                carto: {
+                  type: 'raster',
+                  tiles: [
+                    'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+                    'https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+                    'https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+                  ],
+                  tileSize: 256,
+                  attribution:
+                    '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+                },
+              },
+              layers: [
+                {
+                  id: 'carto-dark-layer',
+                  type: 'raster',
+                  source: 'carto',
+                  minzoom: 0,
+                  maxzoom: 22,
+                },
+              ],
+            },
+            center: [121.0, 23.5],
+            zoom: 8,
+            pitch: 45,
+            bearing: 0,
+            antialias: true,
+          });
+
+          maplibreMap.on('load', () => {
+            console.log('[MapTab] MapLibre GL 地圖（模式2）載入完成');
+
+            const calculateHexWidth = () => {
+              if (
+                !hexData2.value ||
+                !hexData2.value.features ||
+                hexData2.value.features.length === 0
+              ) {
+                return 6000;
+              }
+
+              const firstHex = hexData2.value.features.find(
+                (f) =>
+                  f.geometry && f.geometry.coordinates?.[0] && f.geometry.coordinates[0].length >= 4
+              );
+
+              if (!firstHex || !firstHex.geometry.coordinates[0]) {
+                return 6000;
+              }
+
+              const coords = firstHex.geometry.coordinates[0];
+              const p1 = coords[0];
+              const p4 = coords[3];
+
+              const R = 6371000;
+              const lat1 = (p1[1] * Math.PI) / 180;
+              const lat4 = (p4[1] * Math.PI) / 180;
+              const dLat = ((p4[1] - p1[1]) * Math.PI) / 180;
+              const dLon = ((p4[0] - p1[0]) * Math.PI) / 180;
+              const a =
+                Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(lat1) * Math.cos(lat4) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+              const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+              const width = R * c;
+
+              console.log('[MapTab] MapLibre GL 3D（模式2）- 計算的六角形寬度（米）:', width);
+              return width;
+            };
+
+            const hexWidth = calculateHexWidth();
+
+            const valueKey = '有偶_相同性別_總計';
+            const getValue = (feature) => Number(feature?.properties?.[valueKey]) || 0;
+
+            const { min, max } = hexData2Stats.value || {};
+            const domainMin = Number.isFinite(min) && min > 0 ? min : 0;
+            const rawMax = Number.isFinite(max) && max > 0 ? max : domainMin;
+            const effectiveMax =
+              rawMax > domainMin ? rawMax : domainMin === 0 ? 1 : domainMin * 1.01;
+
+            const heightScale = d3
+              .scaleLinear()
+              .domain([domainMin, effectiveMax])
+              .range([hexWidth * 0.5, hexWidth * 8]);
+
+            const features = Array.isArray(hexData2.value.features) ? hexData2.value.features : [];
+            const featuresWithHeight = features
+              .filter(
+                (feature) =>
+                  feature.geometry &&
+                  feature.geometry.type === 'Polygon' &&
+                  (feature.properties?.pride_level || 0) > 0
+              )
+              .map((feature) => {
+                const value = getValue(feature);
+                const level = feature.properties?.pride_level || 0;
+                return {
+                  ...feature,
+                  properties: {
+                    ...feature.properties,
+                    base_height: heightScale(Math.min(effectiveMax, Math.max(domainMin, value))),
+                    color: getPrideColorByLevel(level),
+                  },
+                };
+              });
+
+            if (countyData.value && countyData.value.features) {
+              maplibreMap.addSource('county-boundaries', {
+                type: 'geojson',
+                data: countyData.value,
+              });
+
+              maplibreMap.addLayer({
+                id: 'county-boundaries-line',
+                type: 'line',
+                source: 'county-boundaries',
+                paint: {
+                  'line-color': '#ffffff',
+                  'line-width': 2,
+                  'line-opacity': 0.8,
+                },
+              });
+              console.log('[MapTab] MapLibre GL 3D（模式2）- 縣市界線繪製完成');
+            }
+
+            maplibreMap.addSource('hexagons-3d', {
+              type: 'geojson',
+              data: {
+                type: 'FeatureCollection',
+                features: featuresWithHeight,
+              },
+            });
+
+            maplibreMap.addLayer({
+              id: 'hexagons-3d-fill',
+              type: 'fill-extrusion',
+              source: 'hexagons-3d',
+              paint: {
+                'fill-extrusion-color': ['get', 'color'],
+                'fill-extrusion-height': ['get', 'base_height'],
+                'fill-extrusion-base': 0,
+                'fill-extrusion-opacity': 0.85,
+              },
+            });
+
+            const formatVillageList = (villageList) => {
+              if (!villageList) return 'N/A';
+              let villages = villageList;
+              if (typeof villageList === 'string') {
+                try {
+                  villages = JSON.parse(villageList);
+                } catch (e) {
+                  try {
+                    const jsonString = villageList
+                      .replace(/'/g, '"')
+                      .replace(/None/g, 'null')
+                      .replace(/True/g, 'true')
+                      .replace(/False/g, 'false');
+                    villages = JSON.parse(jsonString);
+                  } catch (e2) {
+                    return villageList;
+                  }
+                }
+              }
+
+              if (!Array.isArray(villages)) {
+                return String(villages);
+              }
+
+              if (villages.length === 0) return '無資料';
+
+              return villages
+                .map((village, index) => {
+                  if (typeof village === 'object' && village !== null) {
+                    const items = Object.keys(village)
+                      .map((key) => {
+                        const val = village[key];
+                        const displayVal = val === null || val === undefined ? 'N/A' : val;
+                        return `<span style="margin-right: 10px;"><strong>${key}:</strong> ${displayVal}</span>`;
+                      })
+                      .join('');
+                    return `<div style="margin: 5px 0; padding: 5px; background: rgba(255,255,255,0.1); border-radius: 3px;">${index + 1}. ${items}</div>`;
+                  }
+                  return `<div style="margin: 5px 0;">${index + 1}. ${village}</div>`;
+                })
+                .join('');
+            };
+
+            maplibreMap.on('click', 'hexagons-3d-fill', (e) => {
+              const properties = e.features[0].properties;
+              console.log('[MapTab] MapLibre GL（模式2）- 點擊的實體信息:', properties);
+
+              let html = '<div style="max-width: 420px; max-height: 520px; overflow-y: auto;">';
+
+              Object.keys(properties).forEach((key) => {
+                const value = properties[key];
+
+                if (key === 'village_list' || key === 'villageList') {
+                  html += `<div style="margin-bottom: 10px;"><strong>${key}:</strong><div style="margin-top: 5px;">${formatVillageList(value)}</div></div>`;
+                } else {
+                  html += `<div style="margin-bottom: 5px;"><strong>${key}:</strong> ${value}</div>`;
+                }
+              });
+
+              html += '</div>';
+
+              new maplibregl.Popup({ maxWidth: '450px' })
+                .setLngLat(e.lngLat)
+                .setHTML(html)
+                .addTo(maplibreMap);
+            });
+
+            maplibreMap.on('mouseenter', 'hexagons-3d-fill', () => {
+              maplibreMap.getCanvas().style.cursor = 'pointer';
+            });
+
+            maplibreMap.on('mouseleave', 'hexagons-3d-fill', () => {
+              maplibreMap.getCanvas().style.cursor = '';
+            });
+
+            isMapReady.value = true;
+            console.log('[MapTab] MapLibre GL 3D 地圖（模式2）初始化完成');
+          });
+
+          maplibreMap.on('error', (error) => {
+            console.error('[MapTab] MapLibre GL 地圖（模式2）載入錯誤:', error);
+          });
+        } catch (error) {
+          console.error('[MapTab] MapLibre GL 3D 地圖（模式2）初始化失敗:', error);
+        }
+      };
+
+      /**
        * 🗺️ 繪製六角形網格（使用 ratio_China 數據）
        */
       const drawHexGrid = () => {
@@ -1931,6 +2913,290 @@
           .attr('fill', '#333')
           .attr('text-anchor', 'middle')
           .text('ratio_China (比例值) - Level');
+      };
+
+      /**
+       * 🌈 Pride 六色圖例
+       */
+      const drawPrideLegend = (breaks) => {
+        if (!svg || !mapContainer.value) return;
+
+        svg.selectAll('.legend').remove();
+
+        if (!Array.isArray(breaks) || breaks.length < 2) {
+          return;
+        }
+
+        const rect = mapContainer.value.getBoundingClientRect();
+        const svgWidth = rect.width;
+        const svgHeight = rect.height;
+        const legendWidth = 240;
+        const boxHeight = 16;
+        const spacing = 6;
+        const legendX = svgWidth - legendWidth - 15;
+        const legendY = svgHeight - (boxHeight + spacing) * prideColors.length - 120;
+
+        const formatNumber = (value) => {
+          if (!Number.isFinite(value)) return 'N/A';
+          return Math.round(value).toLocaleString();
+        };
+
+        const items = prideColors.map((color, index) => ({
+          color,
+          lower: breaks[index] ?? breaks[Math.max(0, breaks.length - 2)],
+          upper: breaks[index + 1] ?? breaks[breaks.length - 1],
+        }));
+
+        const legend = svg
+          .append('g')
+          .attr('class', 'legend')
+          .attr('transform', `translate(${legendX}, ${legendY})`);
+
+        legend
+          .append('text')
+          .attr('x', legendWidth / 2)
+          .attr('y', -10)
+          .attr('text-anchor', 'middle')
+          .attr('font-size', '13px')
+          .attr('font-weight', 'bold')
+          .attr('fill', '#333')
+          .text('有偶_相同性別_總計 (Natural Breaks)');
+
+        const groups = legend
+          .selectAll('.legend-item')
+          .data(items)
+          .enter()
+          .append('g')
+          .attr('class', 'legend-item')
+          .attr('transform', (_, i) => `translate(0, ${i * (boxHeight + spacing)})`);
+
+        groups
+          .append('rect')
+          .attr('width', 28)
+          .attr('height', boxHeight)
+          .attr('rx', 3)
+          .attr('ry', 3)
+          .attr('fill', (d) => d.color)
+          .attr('stroke', '#333')
+          .attr('stroke-width', 1);
+
+        groups
+          .append('text')
+          .attr('x', 36)
+          .attr('y', boxHeight / 2 + 4)
+          .attr('font-size', '12px')
+          .attr('fill', '#333')
+          .text((d, index) => {
+            const lowerLabel = formatNumber(d.lower);
+            const upperLabel = formatNumber(d.upper);
+            if (index === prideColors.length - 1) {
+              return `${lowerLabel}+`;
+            }
+            return `${lowerLabel} – ${upperLabel}`;
+          });
+      };
+
+      /**
+       * 🗺️ Pride 六色地圖（模式2）
+       */
+      const drawHexGrid2 = () => {
+        if (!g || !hexData2.value || !path) {
+          console.error(
+            '[MapTab] 無法繪製六角形網格（模式2）: g=',
+            !!g,
+            'hexData2=',
+            !!hexData2.value,
+            'path=',
+            !!path
+          );
+          return;
+        }
+
+        try {
+          console.log('[MapTab] 開始繪製六角形網格（模式2）GeoJSON');
+
+          ensureHexData2Levels();
+
+          g.selectAll('.hex-grid').remove();
+
+          const features = Array.isArray(hexData2.value.features) ? hexData2.value.features : [];
+          const valueKey = '有偶_相同性別_總計';
+          const getValue = (feature) => Number(feature?.properties?.[valueKey]) || 0;
+
+          const validFeatures = features.filter(
+            (feature) => (feature.properties?.pride_level || 0) > 0
+          );
+
+          if (validFeatures.length === 0) {
+            console.warn('[MapTab] 模式2 無可用的 Pride 六角格');
+            g.selectAll('.legend').remove();
+            return;
+          }
+
+          const sortedHexes = [...validFeatures].sort((a, b) => getValue(a) - getValue(b));
+
+          console.log('[DEBUG] 模式2 - 有效六角格數量:', sortedHexes.length);
+          console.log('[DEBUG] 模式2 - 分級界線:', hexData2Breaks.value);
+
+          const hexPaths = g
+            .selectAll('.hex-grid')
+            .data(sortedHexes)
+            .enter()
+            .append('path')
+            .attr('d', path)
+            .attr('class', 'hex-grid')
+            .attr('fill', (d) => getPrideColorByLevel(d.properties?.pride_level || 0))
+            .attr('fill-opacity', 0.85)
+            .attr('stroke', '#ffffff')
+            .attr('stroke-width', 0.5)
+            .style('cursor', 'pointer');
+
+          hexPaths
+            .on('mouseover', function (event, d) {
+              d3.select(this).attr('fill-opacity', 1).attr('stroke-width', 2);
+              if (tooltip) {
+                const properties = d.properties || {};
+                const formatValue = (key, value) => {
+                  if (value === null || value === undefined) return 'N/A';
+                  if (typeof value === 'number') {
+                    return value.toLocaleString();
+                  }
+                  return value;
+                };
+                let tooltipHTML = '';
+                Object.keys(properties).forEach((key) => {
+                  const value = properties[key];
+                  tooltipHTML += `<div><strong>${key}:</strong> ${formatValue(key, value)}</div>`;
+                });
+                tooltip.innerHTML = tooltipHTML;
+                const [mouseX, mouseY] = d3.pointer(event, mapContainer.value);
+                tooltip.style.left = mouseX + 10 + 'px';
+                tooltip.style.top = mouseY - 10 + 'px';
+                tooltip.style.opacity = 1;
+              }
+            })
+            .on('mousemove', function (event) {
+              if (tooltip) {
+                const [mouseX, mouseY] = d3.pointer(event, mapContainer.value);
+                tooltip.style.left = mouseX + 10 + 'px';
+                tooltip.style.top = mouseY - 10 + 'px';
+              }
+            })
+            .on('mouseout', function () {
+              d3.select(this).attr('fill-opacity', 0.85).attr('stroke-width', 0.5);
+              if (tooltip) {
+                tooltip.style.opacity = 0;
+              }
+            });
+
+          drawPrideLegend(hexData2Breaks.value);
+
+          console.log('[MapTab] 六角形網格（模式2）繪製完成');
+        } catch (error) {
+          console.error('[MapTab] 六角形網格（模式2）繪製失敗:', error);
+        }
+      };
+
+      /**
+       * 🗺️ Pride 六色網格（Grid 模式2）
+       */
+      const drawHexGridOnly2 = () => {
+        if (!g || !hexData2.value || !path) {
+          console.error(
+            '[MapTab] 無法繪製六角形網格（模式2）: g=',
+            !!g,
+            'hexData2=',
+            !!hexData2.value,
+            'path=',
+            !!path
+          );
+          return;
+        }
+
+        try {
+          console.log('[MapTab] 開始繪製六角形網格（Grid 模式2）');
+
+          ensureHexData2Levels();
+
+          g.selectAll('.hex-grid').remove();
+          g.selectAll('.county').remove();
+
+          const features = Array.isArray(hexData2.value.features) ? hexData2.value.features : [];
+          const valueKey = '有偶_相同性別_總計';
+          const getValue = (feature) => Number(feature?.properties?.[valueKey]) || 0;
+
+          const validFeatures = features.filter(
+            (feature) => (feature.properties?.pride_level || 0) > 0
+          );
+
+          if (validFeatures.length === 0) {
+            console.warn('[MapTab] Grid 模式2 無可用的 Pride 六角格');
+            g.selectAll('.legend').remove();
+            return;
+          }
+
+          const sortedHexes = [...validFeatures].sort((a, b) => getValue(a) - getValue(b));
+
+          console.log('[DEBUG] Grid 模式2 - 有效六角格數量:', sortedHexes.length);
+          console.log('[DEBUG] Grid 模式2 - 分級界線:', hexData2Breaks.value);
+
+          const hexPaths = g
+            .selectAll('.hex-grid')
+            .data(sortedHexes)
+            .enter()
+            .append('path')
+            .attr('d', path)
+            .attr('class', 'hex-grid')
+            .attr('fill', (d) => getPrideColorByLevel(d.properties?.pride_level || 0))
+            .attr('fill-opacity', 0.85)
+            .attr('stroke', '#ffffff')
+            .attr('stroke-width', 0.5)
+            .style('cursor', 'pointer');
+
+          hexPaths
+            .on('mouseover', function (event, d) {
+              d3.select(this).attr('fill-opacity', 1).attr('stroke-width', 2);
+              if (tooltip) {
+                const properties = d.properties || {};
+                const formatValue = (key, value) => {
+                  if (value === null || value === undefined) return 'N/A';
+                  if (typeof value === 'number') {
+                    return value.toLocaleString();
+                  }
+                  return value;
+                };
+                let tooltipHTML = '';
+                Object.keys(properties).forEach((key) => {
+                  const value = properties[key];
+                  tooltipHTML += `<div><strong>${key}:</strong> ${formatValue(key, value)}</div>`;
+                });
+                tooltip.innerHTML = tooltipHTML;
+                const [mouseX, mouseY] = d3.pointer(event, mapContainer.value);
+                tooltip.style.left = mouseX + 10 + 'px';
+                tooltip.style.top = mouseY - 10 + 'px';
+                tooltip.style.opacity = 1;
+              }
+            })
+            .on('mousemove', function (event) {
+              if (tooltip) {
+                const [mouseX, mouseY] = d3.pointer(event, mapContainer.value);
+                tooltip.style.left = mouseX + 10 + 'px';
+                tooltip.style.top = mouseY - 10 + 'px';
+              }
+            })
+            .on('mouseout', function () {
+              d3.select(this).attr('fill-opacity', 0.85).attr('stroke-width', 0.5);
+              if (tooltip) {
+                tooltip.style.opacity = 0;
+              }
+            });
+
+          drawPrideLegend(hexData2Breaks.value);
+
+          console.log('[MapTab] 六角形網格（Grid 模式2）繪製完成');
+        } catch (error) {
+          console.error('[MapTab] 六角形網格（Grid 模式2）繪製失敗:', error);
+        }
       };
 
       /**
@@ -2261,6 +3527,38 @@
               @click="toggleDisplayMode('maplibre3d')"
             >
               MapLibre 3D模式
+            </button>
+            <button
+              type="button"
+              class="btn border-0 my-country-btn my-font-sm-white px-4 py-3"
+              :class="[displayMode === 'map2' ? 'active' : '']"
+              @click="toggleDisplayMode('map2')"
+            >
+              地圖模式2
+            </button>
+            <button
+              type="button"
+              class="btn border-0 my-country-btn my-font-sm-white px-4 py-3"
+              :class="[displayMode === 'grid2' ? 'active' : '']"
+              @click="toggleDisplayMode('grid2')"
+            >
+              網格模式2
+            </button>
+            <button
+              type="button"
+              class="btn border-0 my-country-btn my-font-sm-white px-4 py-3"
+              :class="[displayMode === 'cesium3d2' ? 'active' : '']"
+              @click="toggleDisplayMode('cesium3d2')"
+            >
+              CesiumJS 3D模式2
+            </button>
+            <button
+              type="button"
+              class="btn border-0 my-country-btn my-font-sm-white px-4 py-3"
+              :class="[displayMode === 'maplibre3d2' ? 'active' : '']"
+              @click="toggleDisplayMode('maplibre3d2')"
+            >
+              MapLibre 3D模式2
             </button>
           </div>
         </div>
