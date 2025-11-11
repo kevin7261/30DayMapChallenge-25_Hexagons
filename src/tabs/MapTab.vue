@@ -250,8 +250,18 @@
         '#FF8C00', // Orange
         '#E40303', // Red
       ];
-      const getPrideColorByLevel = (level) =>
-        level >= 1 && level <= prideColors.length ? prideColors[level - 1] : '#f0f0f0';
+      const createPrideGradientScale = (minVal, maxVal) => {
+        const safeMin = Number.isFinite(minVal) ? minVal : 0;
+        let safeMax = Number.isFinite(maxVal) ? maxVal : safeMin;
+        if (safeMax <= safeMin) {
+          safeMax = safeMin === 0 ? 1 : safeMin + Math.abs(safeMin) * 0.01;
+        }
+        const step = prideColors.length - 1;
+        const domain = prideColors.map(
+          (_, index) => safeMin + ((safeMax - safeMin) / step) * index
+        );
+        return d3.scaleLinear().domain(domain).range(prideColors).clamp(true);
+      };
 
       /**
        * 登革熱網格 GeoJSON 數據（保留以兼容）
@@ -1286,8 +1296,6 @@
           }
           if (!hexData2.value) {
             await loadHexData2();
-          } else {
-            ensureHexData2Levels();
           }
 
           cleanup3DViews();
@@ -1335,7 +1343,7 @@
                 .append('svg')
                 .attr('width', width)
                 .attr('height', height)
-                .style('background', '#ffffff');
+                .style('background', '#000000');
 
               projection = d3
                 .geoMercator()
@@ -1363,6 +1371,7 @@
             }
           } else if (svg && zoom) {
             svg.call(zoom.transform, d3.zoomIdentity);
+            svg.style('background', '#000000');
           }
 
           drawCounties();
@@ -1370,8 +1379,6 @@
         } else if (displayMode.value === 'grid2') {
           if (!hexData2.value) {
             await loadHexData2();
-          } else {
-            ensureHexData2Levels();
           }
           countyData.value = null;
 
@@ -1415,7 +1422,7 @@
                 .append('svg')
                 .attr('width', width)
                 .attr('height', height)
-                .style('background', '#ffffff');
+                .style('background', '#000000');
 
               projection = d3
                 .geoMercator()
@@ -1443,6 +1450,7 @@
             }
           } else if (svg && zoom) {
             svg.call(zoom.transform, d3.zoomIdentity);
+            svg.style('background', '#000000');
           }
 
           drawHexGridOnly2();
@@ -2170,8 +2178,6 @@
             return;
           }
 
-          ensureHexData2Levels();
-
           if (!countyData.value) {
             await loadCountyData();
           }
@@ -2265,12 +2271,12 @@
             .domain([domainMin, effectiveMax])
             .range([hexWidth * 0.5, hexWidth * 8]);
 
+          const colorScale = createPrideGradientScale(domainMin, effectiveMax);
+
           const features = Array.isArray(hexData2.value.features) ? hexData2.value.features : [];
           const validFeatures = features.filter(
             (feature) =>
-              feature.geometry &&
-              feature.geometry.type === 'Polygon' &&
-              (feature.properties?.pride_level || 0) > 0
+              feature.geometry && feature.geometry.type === 'Polygon' && getValue(feature) > 0
           );
 
           if (countyData.value && countyData.value.features) {
@@ -2311,10 +2317,9 @@
 
           validFeatures.forEach((feature) => {
             const value = getValue(feature);
-            const level = feature.properties?.pride_level || 0;
-            const color = Cesium.Color.fromCssColorString(getPrideColorByLevel(level)).withAlpha(
-              0.85
-            );
+            const color = Cesium.Color.fromCssColorString(
+              colorScale(Math.min(effectiveMax, Math.max(domainMin, value)))
+            ).withAlpha(1);
             const coordinates = feature.geometry.coordinates[0];
             const extrudedHeight = heightScale(Math.min(effectiveMax, Math.max(domainMin, value)));
             const hierarchy = coordinates.map((coord) =>
@@ -2385,7 +2390,13 @@
 
               for (const key in properties) {
                 if (Object.prototype.hasOwnProperty.call(properties, key)) {
-                  const value = properties[key].getValue();
+                  const propertyValue = properties[key];
+                  const value =
+                    propertyValue &&
+                    typeof propertyValue === 'object' &&
+                    typeof propertyValue.getValue === 'function'
+                      ? propertyValue.getValue()
+                      : propertyValue;
 
                   if (key === 'village_list' || key === 'villageList') {
                     html += `<div><strong>${key}:</strong><br>${formatVillageList(value)}</div><br>`;
@@ -2422,8 +2433,6 @@
             console.error('[MapTab] 無法初始化 MapLibre GL（模式2）: 容器或數據不存在');
             return;
           }
-
-          ensureHexData2Levels();
 
           if (!countyData.value) {
             await loadCountyData();
@@ -2519,23 +2528,22 @@
               .domain([domainMin, effectiveMax])
               .range([hexWidth * 0.5, hexWidth * 8]);
 
+            const colorScale = createPrideGradientScale(domainMin, effectiveMax);
+
             const features = Array.isArray(hexData2.value.features) ? hexData2.value.features : [];
             const featuresWithHeight = features
               .filter(
                 (feature) =>
-                  feature.geometry &&
-                  feature.geometry.type === 'Polygon' &&
-                  (feature.properties?.pride_level || 0) > 0
+                  feature.geometry && feature.geometry.type === 'Polygon' && getValue(feature) > 0
               )
               .map((feature) => {
                 const value = getValue(feature);
-                const level = feature.properties?.pride_level || 0;
                 return {
                   ...feature,
                   properties: {
                     ...feature.properties,
                     base_height: heightScale(Math.min(effectiveMax, Math.max(domainMin, value))),
-                    color: getPrideColorByLevel(level),
+                    color: colorScale(Math.min(effectiveMax, Math.max(domainMin, value))),
                   },
                 };
               });
@@ -2575,7 +2583,7 @@
                 'fill-extrusion-color': ['get', 'color'],
                 'fill-extrusion-height': ['get', 'base_height'],
                 'fill-extrusion-base': 0,
-                'fill-extrusion-opacity': 0.85,
+                'fill-extrusion-opacity': 1,
               },
             });
 
@@ -2918,34 +2926,18 @@
       /**
        * 🌈 Pride 六色圖例
        */
-      const drawPrideLegend = (breaks) => {
+      const drawPrideGradientLegend = (min, max, colorScale) => {
         if (!svg || !mapContainer.value) return;
 
         svg.selectAll('.legend').remove();
 
-        if (!Array.isArray(breaks) || breaks.length < 2) {
-          return;
-        }
-
         const rect = mapContainer.value.getBoundingClientRect();
         const svgWidth = rect.width;
         const svgHeight = rect.height;
-        const legendWidth = 240;
+        const legendWidth = 260;
         const boxHeight = 16;
-        const spacing = 6;
         const legendX = svgWidth - legendWidth - 15;
-        const legendY = svgHeight - (boxHeight + spacing) * prideColors.length - 120;
-
-        const formatNumber = (value) => {
-          if (!Number.isFinite(value)) return 'N/A';
-          return Math.round(value).toLocaleString();
-        };
-
-        const items = prideColors.map((color, index) => ({
-          color,
-          lower: breaks[index] ?? breaks[Math.max(0, breaks.length - 2)],
-          upper: breaks[index + 1] ?? breaks[breaks.length - 1],
-        }));
+        const legendY = svgHeight - boxHeight - 120;
 
         const legend = svg
           .append('g')
@@ -2959,41 +2951,63 @@
           .attr('text-anchor', 'middle')
           .attr('font-size', '13px')
           .attr('font-weight', 'bold')
-          .attr('fill', '#333')
-          .text('有偶_相同性別_總計 (Natural Breaks)');
+          .attr('fill', '#f5f5f5')
+          .text('有偶_相同性別_總計');
 
-        const groups = legend
-          .selectAll('.legend-item')
-          .data(items)
-          .enter()
-          .append('g')
-          .attr('class', 'legend-item')
-          .attr('transform', (_, i) => `translate(0, ${i * (boxHeight + spacing)})`);
+        let start = Number.isFinite(min) ? min : 0;
+        let end = Number.isFinite(max) ? max : start;
+        if (end <= start) {
+          end = start === 0 ? 1 : start + Math.abs(start) * 0.01;
+        }
 
-        groups
+        let defs = svg.select('defs');
+        if (defs.empty()) {
+          defs = svg.append('defs');
+        }
+
+        defs.select('#pride-gradient').remove();
+        const gradient = defs
+          .append('linearGradient')
+          .attr('id', 'pride-gradient')
+          .attr('x1', '0%')
+          .attr('y1', '0%')
+          .attr('x2', '100%')
+          .attr('y2', '0%');
+
+        prideColors.forEach((_, index) => {
+          const t = index / (prideColors.length - 1);
+          const value = start + t * (end - start);
+          gradient
+            .append('stop')
+            .attr('offset', `${t * 100}%`)
+            .attr('stop-color', colorScale(value));
+        });
+
+        legend
           .append('rect')
-          .attr('width', 28)
+          .attr('width', legendWidth)
           .attr('height', boxHeight)
-          .attr('rx', 3)
-          .attr('ry', 3)
-          .attr('fill', (d) => d.color)
-          .attr('stroke', '#333')
-          .attr('stroke-width', 1);
+          .attr('fill', 'url(#pride-gradient)')
+          .attr('stroke', '#f5f5f5')
+          .attr('stroke-width', 1)
+          .attr('rx', 4)
+          .attr('ry', 4);
 
-        groups
-          .append('text')
-          .attr('x', 36)
-          .attr('y', boxHeight / 2 + 4)
-          .attr('font-size', '12px')
-          .attr('fill', '#333')
-          .text((d, index) => {
-            const lowerLabel = formatNumber(d.lower);
-            const upperLabel = formatNumber(d.upper);
-            if (index === prideColors.length - 1) {
-              return `${lowerLabel}+`;
-            }
-            return `${lowerLabel} – ${upperLabel}`;
-          });
+        const scale = d3.scaleLinear().domain([start, end]).range([0, legendWidth]);
+        const axis = d3
+          .axisBottom(scale)
+          .ticks(6)
+          .tickFormat((d) => Math.round(d).toLocaleString());
+
+        legend
+          .append('g')
+          .attr('transform', `translate(0, ${boxHeight})`)
+          .call(axis)
+          .selectAll('text')
+          .style('font-size', '11px')
+          .style('fill', '#f5f5f5');
+
+        legend.selectAll('.domain, .tick line').style('stroke', '#f5f5f5');
       };
 
       /**
@@ -3015,17 +3029,18 @@
         try {
           console.log('[MapTab] 開始繪製六角形網格（模式2）GeoJSON');
 
-          ensureHexData2Levels();
-
           g.selectAll('.hex-grid').remove();
 
           const features = Array.isArray(hexData2.value.features) ? hexData2.value.features : [];
           const valueKey = '有偶_相同性別_總計';
           const getValue = (feature) => Number(feature?.properties?.[valueKey]) || 0;
 
-          const validFeatures = features.filter(
-            (feature) => (feature.properties?.pride_level || 0) > 0
-          );
+          const { min, max } = hexData2Stats.value || {};
+          const domainMin = Number.isFinite(min) && min > 0 ? min : 0;
+          const domainMax = Number.isFinite(max) && max > 0 ? max : domainMin > 0 ? domainMin : 1;
+          const colorScale = createPrideGradientScale(domainMin, domainMax);
+
+          const validFeatures = features.filter((feature) => getValue(feature) > 0);
 
           if (validFeatures.length === 0) {
             console.warn('[MapTab] 模式2 無可用的 Pride 六角格');
@@ -3036,7 +3051,7 @@
           const sortedHexes = [...validFeatures].sort((a, b) => getValue(a) - getValue(b));
 
           console.log('[DEBUG] 模式2 - 有效六角格數量:', sortedHexes.length);
-          console.log('[DEBUG] 模式2 - 分級界線:', hexData2Breaks.value);
+          console.log('[DEBUG] 模式2 - 數值範圍:', { min: domainMin, max: domainMax });
 
           const hexPaths = g
             .selectAll('.hex-grid')
@@ -3045,7 +3060,7 @@
             .append('path')
             .attr('d', path)
             .attr('class', 'hex-grid')
-            .attr('fill', (d) => getPrideColorByLevel(d.properties?.pride_level || 0))
+            .attr('fill', (d) => colorScale(Math.min(domainMax, Math.max(domainMin, getValue(d)))))
             .attr('fill-opacity', 0.85)
             .attr('stroke', '#ffffff')
             .attr('stroke-width', 0.5)
@@ -3089,7 +3104,7 @@
               }
             });
 
-          drawPrideLegend(hexData2Breaks.value);
+          drawPrideGradientLegend(domainMin, domainMax, colorScale);
 
           console.log('[MapTab] 六角形網格（模式2）繪製完成');
         } catch (error) {
@@ -3116,8 +3131,6 @@
         try {
           console.log('[MapTab] 開始繪製六角形網格（Grid 模式2）');
 
-          ensureHexData2Levels();
-
           g.selectAll('.hex-grid').remove();
           g.selectAll('.county').remove();
 
@@ -3125,9 +3138,12 @@
           const valueKey = '有偶_相同性別_總計';
           const getValue = (feature) => Number(feature?.properties?.[valueKey]) || 0;
 
-          const validFeatures = features.filter(
-            (feature) => (feature.properties?.pride_level || 0) > 0
-          );
+          const { min, max } = hexData2Stats.value || {};
+          const domainMin = Number.isFinite(min) && min > 0 ? min : 0;
+          const domainMax = Number.isFinite(max) && max > 0 ? max : domainMin > 0 ? domainMin : 1;
+          const colorScale = createPrideGradientScale(domainMin, domainMax);
+
+          const validFeatures = features.filter((feature) => getValue(feature) > 0);
 
           if (validFeatures.length === 0) {
             console.warn('[MapTab] Grid 模式2 無可用的 Pride 六角格');
@@ -3138,7 +3154,7 @@
           const sortedHexes = [...validFeatures].sort((a, b) => getValue(a) - getValue(b));
 
           console.log('[DEBUG] Grid 模式2 - 有效六角格數量:', sortedHexes.length);
-          console.log('[DEBUG] Grid 模式2 - 分級界線:', hexData2Breaks.value);
+          console.log('[DEBUG] Grid 模式2 - 數值範圍:', { min: domainMin, max: domainMax });
 
           const hexPaths = g
             .selectAll('.hex-grid')
@@ -3147,7 +3163,7 @@
             .append('path')
             .attr('d', path)
             .attr('class', 'hex-grid')
-            .attr('fill', (d) => getPrideColorByLevel(d.properties?.pride_level || 0))
+            .attr('fill', (d) => colorScale(Math.min(domainMax, Math.max(domainMin, getValue(d)))))
             .attr('fill-opacity', 0.85)
             .attr('stroke', '#ffffff')
             .attr('stroke-width', 0.5)
@@ -3191,7 +3207,7 @@
               }
             });
 
-          drawPrideLegend(hexData2Breaks.value);
+          drawPrideGradientLegend(domainMin, domainMax, colorScale);
 
           console.log('[MapTab] 六角形網格（Grid 模式2）繪製完成');
         } catch (error) {
