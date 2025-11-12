@@ -1707,9 +1707,9 @@
               cesiumViewer.scene.shadowMap.enabled = true;
               cesiumViewer.scene.shadowMap.softShadows = true;
               cesiumViewer.scene.shadowMap.size = 4096;
-              cesiumViewer.scene.shadowMap.darkness = 0.4;
-              cesiumViewer.scene.shadowMap.maximumDistance = 2000000;
-              cesiumViewer.scene.shadowMap.normalOffset = true;
+              cesiumViewer.scene.shadowMap.darkness = 0.7;
+              cesiumViewer.scene.shadowMap.maximumDistance = 4000000;
+              cesiumViewer.scene.shadowMap.normalOffset = false;
             }
             const southeastLight = createSoutheastDirectionalLight(Cesium);
             if (southeastLight) {
@@ -2275,7 +2275,9 @@
 
           cesiumViewer.scene.imageryLayers.removeAll();
           if (cesiumViewer.scene && cesiumViewer.scene.globe) {
-            cesiumViewer.scene.globe.show = false;
+            cesiumViewer.scene.globe.show = true;
+            cesiumViewer.scene.globe.baseColor = Cesium.Color.WHITE;
+            cesiumViewer.scene.globe.depthTestAgainstTerrain = true;
           }
           cesiumViewer.scene.skyBox = undefined;
           cesiumViewer.scene.skyAtmosphere = undefined;
@@ -2394,6 +2396,8 @@
                   material: color,
                   height: layerHeightStart,
                   extrudedHeight: layerHeightEnd,
+                  heightReference:
+                    i === 0 ? Cesium.HeightReference.CLAMP_TO_GROUND : Cesium.HeightReference.NONE,
                   outline: false,
                   shadows: Cesium.ShadowMode.ENABLED,
                 },
