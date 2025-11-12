@@ -254,13 +254,96 @@
         const safeMin = Number.isFinite(minVal) ? minVal : 0;
         let safeMax = Number.isFinite(maxVal) ? maxVal : safeMin;
         if (safeMax <= safeMin) {
-          safeMax = safeMin === 0 ? 1 : safeMin + Math.abs(safeMin) * 0.01;
+          safeMax = safeMin + 1;
         }
         const step = prideColors.length - 1;
         const domain = prideColors.map(
           (_, index) => safeMin + ((safeMax - safeMin) / step) * index
         );
         return d3.scaleLinear().domain(domain).range(prideColors).clamp(true);
+      };
+
+      const getColorForAbsoluteHeight = (absoluteHeight, maxHeight) => {
+        // eslint-disable-next-line no-undef
+        const Cesium = window.Cesium;
+
+        const safeMax = Math.max(maxHeight, 1);
+        const ratio = Math.min(Math.max(absoluteHeight / safeMax, 0), 1);
+
+        const stops = [
+          { r: 0.46, g: 0.03, b: 0.53 },
+          { r: 0.16, g: 0.42, b: 0.89 },
+          { r: 0.06, g: 0.73, b: 0.51 },
+          { r: 0.97, g: 0.91, b: 0.2 },
+          { r: 1.0, g: 0.62, b: 0.11 },
+          { r: 0.89, g: 0.01, b: 0.01 },
+        ];
+
+        const segmentCount = stops.length - 1;
+        const scaled = ratio * segmentCount;
+        const segment = Math.min(Math.floor(scaled), segmentCount - 1);
+        const t = scaled - segment;
+
+        const c1 = stops[segment];
+        const c2 = stops[segment + 1] || stops[segment];
+
+        return new Cesium.Color(
+          c1.r + (c2.r - c1.r) * t,
+          c1.g + (c2.g - c1.g) * t,
+          c1.b + (c2.b - c1.b) * t,
+          1.0
+        );
+      };
+
+      const applyCesiumWhiteTheme = (viewer, Cesium) => {
+        if (!viewer || !Cesium) return;
+
+        try {
+          if (viewer.imageryLayers) {
+            viewer.imageryLayers.removeAll();
+          }
+        } catch (e) {
+          console.warn('[MapTab] 移除 Cesium 圖層時出錯:', e);
+        }
+
+        if (viewer.scene) {
+          viewer.scene.backgroundColor = Cesium.Color.WHITE;
+          if (viewer.scene.skyBox) {
+            viewer.scene.skyBox.show = false;
+          }
+          if (viewer.scene.skyAtmosphere) {
+            viewer.scene.skyAtmosphere.show = false;
+          }
+          if (viewer.scene.fog) {
+            viewer.scene.fog.enabled = false;
+          }
+          if (viewer.scene.globe) {
+            viewer.scene.globe.baseColor = Cesium.Color.WHITE;
+            viewer.scene.globe.enableLighting = true;
+            viewer.scene.globe.showGroundAtmosphere = false;
+            viewer.scene.globe.depthTestAgainstTerrain = true;
+          }
+        }
+      };
+
+      const createSoutheastDirectionalLight = (Cesium) => {
+        if (!Cesium || !Cesium.Transforms || !Cesium.DirectionalLight) return null;
+
+        const center = Cesium.Cartesian3.fromDegrees(121.0, 23.5, 0);
+        const enuFrame = Cesium.Transforms.eastNorthUpToFixedFrame(center);
+        const localDirection = Cesium.Cartesian3.normalize(
+          new Cesium.Cartesian3(-1.0, 1.0, -0.6),
+          new Cesium.Cartesian3()
+        );
+        const worldDirection = new Cesium.Cartesian3();
+        Cesium.Matrix4.multiplyByPointAsVector(enuFrame, localDirection, worldDirection);
+        Cesium.Cartesian3.normalize(worldDirection, worldDirection);
+
+        return new Cesium.DirectionalLight({
+          direction: worldDirection,
+          color: Cesium.Color.WHITE,
+          intensity: 1.2,
+        });
       };
 
       /**
@@ -1613,7 +1696,34 @@
             fullscreenButton: false,
             vrButton: false,
             navigationHelpButton: false,
+            shadows: true,
+            shadowMode: Cesium.ShadowMode.ENABLED,
           });
+
+          applyCesiumWhiteTheme(cesiumViewer, Cesium);
+
+          if (cesiumViewer.scene) {
+            if (cesiumViewer.scene.shadowMap) {
+              cesiumViewer.scene.shadowMap.enabled = true;
+              cesiumViewer.scene.shadowMap.softShadows = true;
+              cesiumViewer.scene.shadowMap.size = 4096;
+              cesiumViewer.scene.shadowMap.darkness = 0.4;
+              cesiumViewer.scene.shadowMap.maximumDistance = 2000000;
+              cesiumViewer.scene.shadowMap.normalOffset = true;
+            }
+            const southeastLight = createSoutheastDirectionalLight(Cesium);
+            if (southeastLight) {
+              cesiumViewer.scene.light = southeastLight;
+              if (cesiumViewer.scene.sun) {
+                cesiumViewer.scene.sun.show = false;
+              }
+            } else if (cesiumViewer.scene.sun) {
+              cesiumViewer.scene.sun.enableLight = true;
+            }
+            if (cesiumViewer.scene.globe) {
+              cesiumViewer.scene.globe.enableLighting = true;
+            }
+          }
 
           // 設置視角到台灣
           cesiumViewer.camera.setView({
@@ -1704,46 +1814,6 @@
 
           console.log('[MapTab] CesiumJS 3D - 有效的 features 數量:', validFeatures.length);
 
-          // 繪製台灣縣市界線（白色邊框）
-          if (countyData.value && countyData.value.features) {
-            countyData.value.features.forEach((countyFeature) => {
-              if (countyFeature.geometry && countyFeature.geometry.type === 'Polygon') {
-                const coordinates = countyFeature.geometry.coordinates[0];
-                const positions = coordinates.map((coord) =>
-                  Cesium.Cartesian3.fromDegrees(coord[0], coord[1], 0)
-                );
-
-                // 創建縣市界線（白色邊框，無填充）
-                cesiumViewer.entities.add({
-                  polyline: {
-                    positions: positions.concat([positions[0]]), // 閉合多邊形
-                    width: 2.0,
-                    material: Cesium.Color.WHITE.withAlpha(0.8),
-                    clampToGround: true, // 貼地顯示
-                  },
-                });
-              } else if (countyFeature.geometry && countyFeature.geometry.type === 'MultiPolygon') {
-                // 處理 MultiPolygon 類型
-                countyFeature.geometry.coordinates.forEach((polygon) => {
-                  const coordinates = polygon[0];
-                  const positions = coordinates.map((coord) =>
-                    Cesium.Cartesian3.fromDegrees(coord[0], coord[1], 0)
-                  );
-
-                  cesiumViewer.entities.add({
-                    polyline: {
-                      positions: positions.concat([positions[0]]),
-                      width: 2.0,
-                      material: Cesium.Color.WHITE.withAlpha(0.8),
-                      clampToGround: true,
-                    },
-                  });
-                });
-              }
-            });
-            console.log('[MapTab] CesiumJS 3D - 縣市界線繪製完成');
-          }
-
           // 為每個 feature 創建 3D 柱狀圖（高度由 level 決定）
           validFeatures.forEach((feature) => {
             const level = feature.properties.level;
@@ -1766,6 +1836,7 @@
                 extrudedHeight: extrudedHeight, // 擠壓到的高度
                 // 不顯示邊框
                 outline: false,
+                shadows: Cesium.ShadowMode.ENABLED,
               },
               properties: feature.properties,
             });
@@ -1876,38 +1947,27 @@
             return;
           }
 
-          // 載入縣市界線數據（如果尚未載入）
-          if (!countyData.value) {
-            await loadCountyData();
-          }
-
-          // 創建 MapLibre Map（使用 Carto Dark 底圖）
+          // 創建 MapLibre Map（純白底圖）
           maplibreMap = new maplibregl.Map({
             container: mapContainer.value,
             style: {
               version: 8,
-              sources: {
-                carto: {
-                  type: 'raster',
-                  tiles: [
-                    'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
-                    'https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
-                    'https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
-                  ],
-                  tileSize: 256,
-                  attribution:
-                    '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-                },
-              },
+              sources: {},
               layers: [
                 {
-                  id: 'carto-dark-layer',
-                  type: 'raster',
-                  source: 'carto',
-                  minzoom: 0,
-                  maxzoom: 22,
+                  id: 'white-background',
+                  type: 'background',
+                  paint: {
+                    'background-color': '#ffffff',
+                  },
                 },
               ],
+              light: {
+                anchor: 'viewport',
+                color: '#ffffff',
+                intensity: 0.8,
+                position: [1.5, 135, 45],
+              },
             },
             center: [121.0, 23.5], // 台灣中心
             zoom: 8,
@@ -1916,9 +1976,20 @@
             antialias: true,
           });
 
+          if (maplibreMap && maplibreMap.getCanvas()) {
+            maplibreMap.getCanvas().style.backgroundColor = '#ffffff';
+          }
+
           // 等待地圖載入完成
           maplibreMap.on('load', () => {
             console.log('[MapTab] MapLibre GL 地圖載入完成');
+
+            maplibreMap.setLight({
+              anchor: 'viewport',
+              color: '#ffffff',
+              intensity: 0.85,
+              position: [1.5, 135, 45],
+            });
 
             // 計算六角形網格的寬度（米）
             // 從第一個有效的六角形計算寬度（相對頂點之間的距離）
@@ -2021,27 +2092,6 @@
               featuresWithHeight.length
             );
 
-            // 添加縣市界線 GeoJSON 源
-            if (countyData.value && countyData.value.features) {
-              maplibreMap.addSource('county-boundaries', {
-                type: 'geojson',
-                data: countyData.value,
-              });
-
-              // 添加縣市界線圖層（白色邊框）
-              maplibreMap.addLayer({
-                id: 'county-boundaries-line',
-                type: 'line',
-                source: 'county-boundaries',
-                paint: {
-                  'line-color': '#ffffff',
-                  'line-width': 2,
-                  'line-opacity': 0.8,
-                },
-              });
-              console.log('[MapTab] MapLibre GL 3D - 縣市界線繪製完成');
-            }
-
             // 添加 GeoJSON 源
             maplibreMap.addSource('hexagons-3d', {
               type: 'geojson',
@@ -2061,6 +2111,7 @@
                 'fill-extrusion-height': ['get', 'base_height'],
                 'fill-extrusion-base': 0,
                 'fill-extrusion-opacity': 0.8,
+                'fill-extrusion-vertical-gradient': true,
               },
             });
 
@@ -2208,6 +2259,9 @@
             fullscreenButton: false,
             vrButton: false,
             navigationHelpButton: false,
+            imageryProvider: false,
+            shadows: true,
+            shadowMode: Cesium.ShadowMode.ENABLED,
           });
 
           cesiumViewer.camera.setView({
@@ -2218,6 +2272,35 @@
               roll: 0.0,
             },
           });
+
+          cesiumViewer.scene.imageryLayers.removeAll();
+          if (cesiumViewer.scene && cesiumViewer.scene.globe) {
+            cesiumViewer.scene.globe.show = false;
+          }
+          cesiumViewer.scene.skyBox = undefined;
+          cesiumViewer.scene.skyAtmosphere = undefined;
+          applyCesiumWhiteTheme(cesiumViewer, Cesium);
+          if (cesiumViewer.scene) {
+            cesiumViewer.scene.highDynamicRange = true;
+            if (cesiumViewer.scene.shadowMap) {
+              cesiumViewer.scene.shadowMap.enabled = true;
+              cesiumViewer.scene.shadowMap.softShadows = true;
+              cesiumViewer.scene.shadowMap.size = 4096;
+              cesiumViewer.scene.shadowMap.darkness = 0.4;
+              cesiumViewer.scene.shadowMap.maximumDistance = 2000000;
+              cesiumViewer.scene.shadowMap.normalOffset = true;
+            }
+            const southeastLight = createSoutheastDirectionalLight(Cesium);
+            if (southeastLight) {
+              cesiumViewer.scene.light = southeastLight;
+              if (cesiumViewer.scene.sun) {
+                cesiumViewer.scene.sun.show = false;
+              }
+            }
+            if (cesiumViewer.scene.globe) {
+              cesiumViewer.scene.globe.enableLighting = true;
+            }
+          }
 
           const calculateHexWidth = () => {
             if (
@@ -2271,71 +2354,52 @@
             .domain([domainMin, effectiveMax])
             .range([hexWidth * 0.5, hexWidth * 8]);
 
-          const colorScale = createPrideGradientScale(domainMin, effectiveMax);
-
           const features = Array.isArray(hexData2.value.features) ? hexData2.value.features : [];
           const validFeatures = features.filter(
             (feature) =>
               feature.geometry && feature.geometry.type === 'Polygon' && getValue(feature) > 0
           );
 
-          if (countyData.value && countyData.value.features) {
-            countyData.value.features.forEach((countyFeature) => {
-              if (countyFeature.geometry && countyFeature.geometry.type === 'Polygon') {
-                const coordinates = countyFeature.geometry.coordinates[0];
-                const positions = coordinates.map((coord) =>
-                  Cesium.Cartesian3.fromDegrees(coord[0], coord[1], 0)
-                );
+          const maxExtrudedHeight = Math.max(
+            ...validFeatures.map((f) => {
+              const v = getValue(f);
+              return heightScale(Math.min(effectiveMax, Math.max(domainMin, v)));
+            })
+          );
 
-                cesiumViewer.entities.add({
-                  polyline: {
-                    positions: positions.concat([positions[0]]),
-                    width: 2.0,
-                    material: Cesium.Color.WHITE.withAlpha(0.8),
-                    clampToGround: true,
-                  },
-                });
-              } else if (countyFeature.geometry && countyFeature.geometry.type === 'MultiPolygon') {
-                countyFeature.geometry.coordinates.forEach((polygon) => {
-                  const coordinates = polygon[0];
-                  const positions = coordinates.map((coord) =>
-                    Cesium.Cartesian3.fromDegrees(coord[0], coord[1], 0)
-                  );
-
-                  cesiumViewer.entities.add({
-                    polyline: {
-                      positions: positions.concat([positions[0]]),
-                      width: 2.0,
-                      material: Cesium.Color.WHITE.withAlpha(0.8),
-                      clampToGround: true,
-                    },
-                  });
-                });
-              }
-            });
+          if (!Number.isFinite(maxExtrudedHeight) || maxExtrudedHeight <= 0) {
+            console.warn('[MapTab] CesiumJS 3D（模式2）- 無有效高度可供渲染');
+            return;
           }
 
           validFeatures.forEach((feature) => {
             const value = getValue(feature);
-            const color = Cesium.Color.fromCssColorString(
-              colorScale(Math.min(effectiveMax, Math.max(domainMin, value)))
-            ).withAlpha(1);
             const coordinates = feature.geometry.coordinates[0];
             const extrudedHeight = heightScale(Math.min(effectiveMax, Math.max(domainMin, value)));
             const hierarchy = coordinates.map((coord) =>
               Cesium.Cartesian3.fromDegrees(coord[0], coord[1], 0)
             );
 
-            cesiumViewer.entities.add({
-              polygon: {
-                hierarchy,
-                material: color,
-                height: 0,
-                extrudedHeight,
-                outline: false,
-              },
-              properties: feature.properties,
-            });
+            // 創建多層來模擬垂直漸層，使用全局高度色階
+            const layers = 30;
+            for (let i = 0; i < layers; i++) {
+              const layerHeightStart = (extrudedHeight / layers) * i;
+              const layerHeightEnd = (extrudedHeight / layers) * (i + 1);
+              const absoluteHeight = Math.min(layerHeightEnd, maxExtrudedHeight);
+              const color = getColorForAbsoluteHeight(absoluteHeight, maxExtrudedHeight);
+
+              cesiumViewer.entities.add({
+                polygon: {
+                  hierarchy,
+                  material: color,
+                  height: layerHeightStart,
+                  extrudedHeight: layerHeightEnd,
+                  outline: false,
+                  shadows: Cesium.ShadowMode.ENABLED,
+                },
+                properties: i === 0 ? feature.properties : undefined,
+              });
+            }
           });
 
           const formatVillageList = (villageList) => {
@@ -2434,36 +2498,26 @@
             return;
           }
 
-          if (!countyData.value) {
-            await loadCountyData();
-          }
-
           maplibreMap = new maplibregl.Map({
             container: mapContainer.value,
             style: {
               version: 8,
-              sources: {
-                carto: {
-                  type: 'raster',
-                  tiles: [
-                    'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
-                    'https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
-                    'https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
-                  ],
-                  tileSize: 256,
-                  attribution:
-                    '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-                },
-              },
+              sources: {},
               layers: [
                 {
-                  id: 'carto-dark-layer',
-                  type: 'raster',
-                  source: 'carto',
-                  minzoom: 0,
-                  maxzoom: 22,
+                  id: 'white-background',
+                  type: 'background',
+                  paint: {
+                    'background-color': '#ffffff',
+                  },
                 },
               ],
+              light: {
+                anchor: 'viewport',
+                color: '#ffffff',
+                intensity: 0.8,
+                position: [1.5, 135, 45],
+              },
             },
             center: [121.0, 23.5],
             zoom: 8,
@@ -2472,8 +2526,19 @@
             antialias: true,
           });
 
+          if (maplibreMap && maplibreMap.getCanvas()) {
+            maplibreMap.getCanvas().style.backgroundColor = '#ffffff';
+          }
+
           maplibreMap.on('load', () => {
             console.log('[MapTab] MapLibre GL 地圖（模式2）載入完成');
+
+            maplibreMap.setLight({
+              anchor: 'viewport',
+              color: '#ffffff',
+              intensity: 0.85,
+              position: [1.5, 135, 45],
+            });
 
             const calculateHexWidth = () => {
               if (
@@ -2548,25 +2613,6 @@
                 };
               });
 
-            if (countyData.value && countyData.value.features) {
-              maplibreMap.addSource('county-boundaries', {
-                type: 'geojson',
-                data: countyData.value,
-              });
-
-              maplibreMap.addLayer({
-                id: 'county-boundaries-line',
-                type: 'line',
-                source: 'county-boundaries',
-                paint: {
-                  'line-color': '#ffffff',
-                  'line-width': 2,
-                  'line-opacity': 0.8,
-                },
-              });
-              console.log('[MapTab] MapLibre GL 3D（模式2）- 縣市界線繪製完成');
-            }
-
             maplibreMap.addSource('hexagons-3d', {
               type: 'geojson',
               data: {
@@ -2584,6 +2630,7 @@
                 'fill-extrusion-height': ['get', 'base_height'],
                 'fill-extrusion-base': 0,
                 'fill-extrusion-opacity': 1,
+                'fill-extrusion-vertical-gradient': true,
               },
             });
 
