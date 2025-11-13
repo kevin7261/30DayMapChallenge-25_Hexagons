@@ -263,12 +263,13 @@
         return d3.scaleLinear().domain(domain).range(prideColors).clamp(true);
       };
 
-      const getColorForAbsoluteHeight = (absoluteHeight, maxHeight) => {
+      const getColorForAbsoluteHeight = (value, maxValue, minValue = 0) => {
         // eslint-disable-next-line no-undef
         const Cesium = window.Cesium;
 
-        const safeMax = Math.max(maxHeight, 1);
-        const ratio = Math.min(Math.max(absoluteHeight / safeMax, 0), 1);
+        const safeMin = Number.isFinite(minValue) ? minValue : 0;
+        const safeMax = Number.isFinite(maxValue) && maxValue > safeMin ? maxValue : safeMin + 1;
+        const ratio = Math.min(Math.max((value - safeMin) / (safeMax - safeMin), 0), 1);
 
         const stops = [
           { r: 0.46, g: 0.03, b: 0.53 },
@@ -2362,17 +2363,9 @@
               feature.geometry && feature.geometry.type === 'Polygon' && getValue(feature) > 0
           );
 
-          const maxExtrudedHeight = Math.max(
-            ...validFeatures.map((f) => {
-              const v = getValue(f);
-              return heightScale(Math.min(effectiveMax, Math.max(domainMin, v)));
-            })
-          );
-
-          if (!Number.isFinite(maxExtrudedHeight) || maxExtrudedHeight <= 0) {
-            console.warn('[MapTab] CesiumJS 3D（模式2）- 無有效高度可供渲染');
-            return;
-          }
+          // 使用台灣島的緯度範圍（最南：21.9°N 屏東，最北：25.3°N 基隆）
+          const minLat = 21.9;
+          const maxLat = 25.3;
 
           validFeatures.forEach((feature) => {
             const value = getValue(feature);
@@ -2382,13 +2375,18 @@
               Cesium.Cartesian3.fromDegrees(coord[0], coord[1], 0)
             );
 
-            // 創建多層來模擬垂直漸層，使用全局高度色階
+            // 計算此六角形的中心緯度
+            const centerLat =
+              coordinates.reduce((sum, coord) => sum + coord[1], 0) / coordinates.length;
+
+            // 根據緯度決定顏色（從南到北：紫→藍→綠→黃→橙→紅）
+            const color = getColorForAbsoluteHeight(centerLat, maxLat, minLat);
+
+            // 創建多層來模擬垂直漸層，但所有層使用相同顏色（基於緯度）
             const layers = 30;
             for (let i = 0; i < layers; i++) {
               const layerHeightStart = (extrudedHeight / layers) * i;
               const layerHeightEnd = (extrudedHeight / layers) * (i + 1);
-              const absoluteHeight = Math.min(layerHeightEnd, maxExtrudedHeight);
-              const color = getColorForAbsoluteHeight(absoluteHeight, maxExtrudedHeight);
 
               cesiumViewer.entities.add({
                 polygon: {
